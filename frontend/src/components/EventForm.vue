@@ -1,27 +1,32 @@
 <script setup lang="ts">
-import { reactive, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import Drawer from './Drawer.vue'
 import Icon from './Icon.vue'
 import NumField from './NumField.vue'
 import { api } from '@/lib/api'
 import { incomeTypes, spendingTypes } from '@/lib/eventTypes'
-import { errMsg, invalidatePlan, state, toast } from '@/lib/store'
+import { errMsg, invalidatePlan, ownerName, people, state, toast } from '@/lib/store'
 import type { PlanEvent } from '@/lib/types'
 
 const props = defineProps<{ open: boolean; kind: 'income' | 'spending'; event: PlanEvent | null }>()
 const emit = defineEmits<{ close: [] }>()
-const form = reactive<Omit<PlanEvent, 'id'> & { id?: number }>({ kind: 'income', type: 'other', name: '', start_age: 65, years: 0, annual_amount: 0, inflation_adjusted: true, taxable: false })
+const form = reactive<Omit<PlanEvent, 'id'> & { id?: number }>({ kind: 'income', type: 'other', owner: 'self', name: '', start_age: 65, years: 0, annual_amount: 0, inflation_adjusted: true, taxable: false })
 const forLife = ref(true)
 const busy = ref(false)
 const error = ref('')
+const startLabel = computed(() => (people.value.length > 1 ? `Starts at ${ownerName(form.owner)}\u2019s age` : 'Starts at age'))
 const types = () => (props.kind === 'income' ? incomeTypes : spendingTypes)
+
+const typeName = () => types().find((x) => x.id === form.type)?.name ?? ''
+// "Rachel's Social Security" when the event belongs to someone else
+function defaultName() { return form.owner === 'self' ? typeName() : `${ownerName(form.owner)}'s ${typeName()}` }
 
 function applyType(id: string) {
   const t = types().find((x) => x.id === id)!
   form.type = t.id
-  form.name = t.name
+  form.name = defaultName()
   form.annual_amount = t.amount
-  form.start_age = Math.max(t.startAge, state.profile?.current_age ?? 0)
+  form.start_age = Math.max(t.startAge, people.value.find((p) => p.key === form.owner)?.age ?? 0)
   form.years = t.years
   forLife.value = t.years === 0
   form.taxable = t.taxable
@@ -36,6 +41,7 @@ watch(() => props.open, (o) => {
   } else {
     delete form.id
     form.kind = props.kind
+    form.owner = 'self'
     form.inflation_adjusted = true
     applyType(types()[0].id)
   }
@@ -72,10 +78,15 @@ async function save() {
       <div v-if="!event" class="types">
         <button v-for="t in types()" :key="t.id" type="button" class="chip pick" :class="{ good: form.type === t.id }" @click="applyType(t.id)"><Icon :name="t.icon" :size="15" /> {{ t.label }}</button>
       </div>
+      <label v-if="people.length > 1" class="field"><span>Whose {{ kind === 'income' ? 'income' : 'spending' }}? <em class="hint">ages below are theirs</em></span>
+        <select v-model="form.owner" class="input" @change="!event && applyType(form.type)">
+          <option v-for="p in people" :key="p.key" :value="p.key">{{ p.name }}{{ p.key === 'self' ? ' (you)' : '' }} · age {{ p.age }}</option>
+        </select>
+      </label>
       <label class="field"><span>Name</span><input v-model="form.name" class="input" maxlength="80" required /></label>
       <div class="form-grid">
         <NumField v-model="form.annual_amount" kind="money" label="Amount per year" hint="today's dollars" />
-        <NumField v-model="form.start_age" kind="int" label="Starts at age" />
+        <NumField v-model="form.start_age" kind="int" :label="startLabel" />
         <label class="full row sw">
           <span class="switch"><input v-model="forLife" type="checkbox" /><i /></span><span><b>For life</b></span>
         </label>

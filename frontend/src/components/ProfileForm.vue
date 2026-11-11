@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { reactive, ref, watch } from 'vue'
 import Drawer from './Drawer.vue'
+import HouseholdEditor from './HouseholdEditor.vue'
 import NumField from './NumField.vue'
 import { api } from '@/lib/api'
 import { errMsg, invalidatePlan, state, toast } from '@/lib/store'
@@ -38,8 +39,11 @@ async function save() {
 <template>
   <Drawer :open="open" :title="mode === 'profile' ? 'Edit profile' : 'Edit assumptions'" @close="emit('close')">
     <form id="profile-form" class="stack" @submit.prevent="save">
-      <div v-if="mode === 'profile'" class="form-grid">
-        <NumField v-model="form.current_age" kind="int" label="Your age today" />
+      <template v-if="mode === 'profile'">
+      <div class="form-grid">
+        <label class="field"><span>First name</span><input v-model="form.first_name" class="input" maxlength="40" autocomplete="given-name" /></label>
+        <label class="field"><span>Last name</span><input v-model="form.last_name" class="input" maxlength="40" autocomplete="family-name" /></label>
+        <NumField v-model="form.current_age" kind="int" label="Your age" hint="used across the app" />
         <NumField v-model="form.retirement_age" kind="int" label="Retirement age" />
         <NumField v-model="form.end_age" kind="int" label="Plan through age" hint="life expectancy" />
         <label class="field"><span>Tax filing status</span>
@@ -50,6 +54,9 @@ async function save() {
         <NumField v-model="form.annual_expenses" kind="money" label="Current living expenses" hint="per year" />
         <p class="full small muted">Social Security, pensions, health care and other goals are added as events on the Plan page. Accounts and contributions come from the Accounts page.</p>
       </div>
+      <hr class="divider" />
+      <HouseholdEditor />
+      </template>
       <div v-else class="form-grid">
         <NumField v-model="form.return_pre" kind="pct" label="Return before retirement" hint="nominal, avg." />
         <NumField v-model="form.return_post" kind="pct" label="Return in retirement" hint="nominal, avg." />

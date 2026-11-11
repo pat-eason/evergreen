@@ -76,6 +76,11 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /api/me/email", s.auth(s.changeEmail))
 	m.HandleFunc("PUT /api/me/password", s.auth(s.changePassword))
 
+	m.HandleFunc("GET /api/members", s.auth(s.listMembers))
+	m.HandleFunc("POST /api/members", s.auth(s.createMember))
+	m.HandleFunc("PUT /api/members/{id}", s.auth(s.updateMember))
+	m.HandleFunc("DELETE /api/members/{id}", s.auth(s.deleteMember))
+
 	m.HandleFunc("GET /api/profile", s.auth(s.getProfile))
 	m.HandleFunc("PUT /api/profile", s.auth(s.putProfile))
 

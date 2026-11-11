@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,15 @@ CREATE TABLE IF NOT EXISTS profiles (
   data TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS members (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  first_name TEXT NOT NULL,
+  last_name TEXT NOT NULL DEFAULT '',
+  relationship TEXT NOT NULL DEFAULT 'other',
+  birth_year INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_members_user ON members(user_id);
 CREATE TABLE IF NOT EXISTS accounts (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -121,6 +131,20 @@ func Open(path string) (*Store, error) {
 	if _, err := db.Exec(schema); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
+	}
+	// Columns added after the first release.
+	for _, m := range []struct{ table, col, ddl string }{
+		{"accounts", "owner", "TEXT NOT NULL DEFAULT 'self'"},
+		{"events", "owner", "TEXT NOT NULL DEFAULT 'self'"},
+	} {
+		var n int
+		_ = db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('`+m.table+`') WHERE name=?`, m.col).Scan(&n)
+		if n == 0 {
+			if _, err := db.Exec(`ALTER TABLE ` + m.table + ` ADD COLUMN ` + m.col + ` ` + m.ddl); err != nil {
+				db.Close()
+				return nil, fmt.Errorf("migrate %s.%s: %w", m.table, m.col, err)
+			}
+		}
 	}
 	return &Store{db: db}, nil
 }
@@ -268,7 +292,7 @@ func (s *Store) SaveProfile(ctx context.Context, uid int64, p sim.Profile) error
 // ---------- accounts ----------
 
 func (s *Store) ListAccounts(ctx context.Context, uid int64) ([]sim.Account, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,category,config FROM accounts WHERE user_id=? ORDER BY id`, uid)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,category,owner,config FROM accounts WHERE user_id=? ORDER BY id`, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -277,7 +301,7 @@ func (s *Store) ListAccounts(ctx context.Context, uid int64) ([]sim.Account, err
 	for rows.Next() {
 		var a sim.Account
 		var cfg string
-		if err := rows.Scan(&a.ID, &a.Name, &a.Category, &cfg); err != nil {
+		if err := rows.Scan(&a.ID, &a.Name, &a.Category, &a.Owner, &cfg); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(cfg), &a.Config)
@@ -289,7 +313,7 @@ func (s *Store) ListAccounts(ctx context.Context, uid int64) ([]sim.Account, err
 func (s *Store) GetAccount(ctx context.Context, uid, id int64) (sim.Account, error) {
 	var a sim.Account
 	var cfg string
-	err := s.db.QueryRowContext(ctx, `SELECT id,name,category,config FROM accounts WHERE id=? AND user_id=?`, id, uid).Scan(&a.ID, &a.Name, &a.Category, &cfg)
+	err := s.db.QueryRowContext(ctx, `SELECT id,name,category,owner,config FROM accounts WHERE id=? AND user_id=?`, id, uid).Scan(&a.ID, &a.Name, &a.Category, &a.Owner, &cfg)
 	if errors.Is(err, sql.ErrNoRows) {
 		return a, ErrNotFound
 	}
@@ -299,7 +323,7 @@ func (s *Store) GetAccount(ctx context.Context, uid, id int64) (sim.Account, err
 
 func (s *Store) CreateAccount(ctx context.Context, uid int64, a sim.Account) (sim.Account, error) {
 	b, _ := json.Marshal(a.Config)
-	res, err := s.db.ExecContext(ctx, `INSERT INTO accounts(user_id,name,category,config,created_at,updated_at) VALUES(?,?,?,?,?,?)`, uid, a.Name, a.Category, string(b), now(), now())
+	res, err := s.db.ExecContext(ctx, `INSERT INTO accounts(user_id,name,category,owner,config,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`, uid, a.Name, a.Category, a.Owner, string(b), now(), now())
 	if err != nil {
 		return a, err
 	}
@@ -309,7 +333,7 @@ func (s *Store) CreateAccount(ctx context.Context, uid int64, a sim.Account) (si
 
 func (s *Store) UpdateAccount(ctx context.Context, uid int64, a sim.Account) error {
 	b, _ := json.Marshal(a.Config)
-	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET name=?,category=?,config=?,updated_at=? WHERE id=? AND user_id=?`, a.Name, a.Category, string(b), now(), a.ID, uid)
+	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET name=?,category=?,owner=?,config=?,updated_at=? WHERE id=? AND user_id=?`, a.Name, a.Category, a.Owner, string(b), now(), a.ID, uid)
 	if err != nil {
 		return err
 	}
@@ -332,10 +356,82 @@ func (s *Store) DeleteAccount(ctx context.Context, uid, id int64) error {
 	return nil
 }
 
+// ---------- household members ----------
+
+type Member struct {
+	ID           int64  `json:"id"`
+	FirstName    string `json:"first_name"`
+	LastName     string `json:"last_name"`
+	Relationship string `json:"relationship"`
+	BirthYear    int    `json:"birth_year"`
+}
+
+func (s *Store) ListMembers(ctx context.Context, uid int64) ([]Member, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,first_name,last_name,relationship,birth_year FROM members WHERE user_id=? ORDER BY id`, uid)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []Member{}
+	for rows.Next() {
+		var m Member
+		if err := rows.Scan(&m.ID, &m.FirstName, &m.LastName, &m.Relationship, &m.BirthYear); err != nil {
+			return nil, err
+		}
+		out = append(out, m)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) CreateMember(ctx context.Context, uid int64, m Member) (Member, error) {
+	res, err := s.db.ExecContext(ctx, `INSERT INTO members(user_id,first_name,last_name,relationship,birth_year) VALUES(?,?,?,?,?)`, uid, m.FirstName, m.LastName, m.Relationship, m.BirthYear)
+	if err != nil {
+		return m, err
+	}
+	m.ID, _ = res.LastInsertId()
+	return m, nil
+}
+
+func (s *Store) UpdateMember(ctx context.Context, uid int64, m Member) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE members SET first_name=?,last_name=?,relationship=?,birth_year=? WHERE id=? AND user_id=?`, m.FirstName, m.LastName, m.Relationship, m.BirthYear, m.ID, uid)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// DeleteMember removes a member; their accounts become joint and their events
+// fall back to the primary person's timeline.
+func (s *Store) DeleteMember(ctx context.Context, uid, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `DELETE FROM members WHERE id=? AND user_id=?`, id, uid)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	key := strconv.FormatInt(id, 10)
+	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET owner='joint' WHERE user_id=? AND owner=?`, uid, key); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE events SET owner='self' WHERE user_id=? AND owner=?`, uid, key); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ---------- events ----------
 
 func (s *Store) ListEvents(ctx context.Context, uid int64) ([]sim.Event, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,type,name,start_age,years,annual_amount,inflation_adjusted,taxable FROM events WHERE user_id=? ORDER BY start_age,id`, uid)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,type,name,owner,start_age,years,annual_amount,inflation_adjusted,taxable FROM events WHERE user_id=? ORDER BY start_age,id`, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +440,7 @@ func (s *Store) ListEvents(ctx context.Context, uid int64) ([]sim.Event, error) 
 	for rows.Next() {
 		var e sim.Event
 		var ia, tx int
-		if err := rows.Scan(&e.ID, &e.Kind, &e.Type, &e.Name, &e.StartAge, &e.Years, &e.AnnualAmount, &ia, &tx); err != nil {
+		if err := rows.Scan(&e.ID, &e.Kind, &e.Type, &e.Name, &e.Owner, &e.StartAge, &e.Years, &e.AnnualAmount, &ia, &tx); err != nil {
 			return nil, err
 		}
 		e.InflationAdjusted, e.Taxable = ia == 1, tx == 1
@@ -361,8 +457,8 @@ func b2i(b bool) int {
 }
 
 func (s *Store) CreateEvent(ctx context.Context, uid int64, e sim.Event) (sim.Event, error) {
-	res, err := s.db.ExecContext(ctx, `INSERT INTO events(user_id,kind,type,name,start_age,years,annual_amount,inflation_adjusted,taxable) VALUES(?,?,?,?,?,?,?,?,?)`,
-		uid, e.Kind, e.Type, e.Name, e.StartAge, e.Years, e.AnnualAmount, b2i(e.InflationAdjusted), b2i(e.Taxable))
+	res, err := s.db.ExecContext(ctx, `INSERT INTO events(user_id,kind,type,name,owner,start_age,years,annual_amount,inflation_adjusted,taxable) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+		uid, e.Kind, e.Type, e.Name, e.Owner, e.StartAge, e.Years, e.AnnualAmount, b2i(e.InflationAdjusted), b2i(e.Taxable))
 	if err != nil {
 		return e, err
 	}
@@ -371,8 +467,8 @@ func (s *Store) CreateEvent(ctx context.Context, uid int64, e sim.Event) (sim.Ev
 }
 
 func (s *Store) UpdateEvent(ctx context.Context, uid int64, e sim.Event) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE events SET kind=?,type=?,name=?,start_age=?,years=?,annual_amount=?,inflation_adjusted=?,taxable=? WHERE id=? AND user_id=?`,
-		e.Kind, e.Type, e.Name, e.StartAge, e.Years, e.AnnualAmount, b2i(e.InflationAdjusted), b2i(e.Taxable), e.ID, uid)
+	res, err := s.db.ExecContext(ctx, `UPDATE events SET kind=?,type=?,name=?,owner=?,start_age=?,years=?,annual_amount=?,inflation_adjusted=?,taxable=? WHERE id=? AND user_id=?`,
+		e.Kind, e.Type, e.Name, e.Owner, e.StartAge, e.Years, e.AnnualAmount, b2i(e.InflationAdjusted), b2i(e.Taxable), e.ID, uid)
 	if err != nil {
 		return err
 	}

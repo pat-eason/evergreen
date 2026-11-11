@@ -244,3 +244,99 @@ func TestAccountChanges(t *testing.T) {
 	}
 	_ = b
 }
+
+func TestHouseholdAndOwnership(t *testing.T) {
+	srv := newServer(t)
+	a, b := login(t, srv, "alice"), login(t, srv, "bob")
+
+	// profile: age is stored as a birth year and derived back
+	prof := map[string]any{"first_name": "  Pat ", "last_name": "Smith", "current_age": 36, "retirement_age": 60, "end_age": 90, "retirement_spending": 40000}
+	if w, out := a.do("PUT", "/api/profile", prof); w.Code != 200 {
+		t.Fatalf("profile: %d %v", w.Code, out)
+	}
+	_, got := a.do("GET", "/api/profile", nil)
+	p := got["profile"].(map[string]any)
+	if p["first_name"] != "Pat" || p["current_age"].(float64) != 36 || p["birth_year"].(float64) < 1900 {
+		t.Fatalf("profile roundtrip: %v", p)
+	}
+
+	// members
+	if w, _ := a.do("POST", "/api/members", map[string]any{"first_name": "", "age": 30}); w.Code != 400 {
+		t.Fatalf("blank name: %d", w.Code)
+	}
+	if w, _ := a.do("POST", "/api/members", map[string]any{"first_name": "X", "age": 30, "relationship": "cousin"}); w.Code != 400 {
+		t.Fatalf("bad relationship: %d", w.Code)
+	}
+	w, m := a.do("POST", "/api/members", map[string]any{"first_name": "Rachel", "last_name": "Smith", "relationship": "spouse", "age": 30})
+	if w.Code != 201 || m["age"].(float64) != 30 {
+		t.Fatalf("create member: %d %v", w.Code, m)
+	}
+	mid := itoa(int(m["id"].(float64)))
+	if w, _ := b.do("PUT", "/api/members/"+mid, map[string]any{"first_name": "Hax", "age": 5}); w.Code != 404 {
+		t.Fatalf("cross-user member update: %d", w.Code)
+	}
+
+	// owners: validated, and not usable across users
+	acct := func(owner string) map[string]any {
+		return map[string]any{"name": "IRA", "category": "investment", "owner": owner, "config": map[string]any{"balance": 1000}}
+	}
+	if w, out := a.do("POST", "/api/accounts", acct(mid)); w.Code != 201 || out["owner"] != mid {
+		t.Fatalf("member-owned account: %d %v", w.Code, out)
+	}
+	if w, out := a.do("POST", "/api/accounts", acct("joint")); w.Code != 201 || out["owner"] != "joint" {
+		t.Fatalf("joint account: %d %v", w.Code, out)
+	}
+	if w, out := a.do("POST", "/api/accounts", acct("")); w.Code != 201 || out["owner"] != "self" {
+		t.Fatalf("default owner: %d %v", w.Code, out)
+	}
+	if w, _ := b.do("POST", "/api/accounts", acct(mid)); w.Code != 400 {
+		t.Fatalf("other user's member as owner: %d", w.Code)
+	}
+	if w, _ := a.do("POST", "/api/accounts", acct("999")); w.Code != 400 {
+		t.Fatalf("unknown owner: %d", w.Code)
+	}
+	ev := map[string]any{"kind": "income", "type": "social_security", "name": "Rachel SS", "owner": mid, "start_age": 67, "annual_amount": 30000, "taxable": true}
+	if w, _ := a.do("POST", "/api/events", map[string]any{"kind": "income", "name": "x", "owner": "joint", "start_age": 67, "annual_amount": 1}); w.Code != 400 {
+		t.Fatalf("joint event should be rejected: %d", w.Code)
+	}
+	if w, out := a.do("POST", "/api/events", ev); w.Code != 201 || out["owner"] != mid {
+		t.Fatalf("member event: %d %v", w.Code, out)
+	}
+
+	// engine runs on the primary's timeline: spouse is 6 years younger, so
+	// their age-67 benefit starts when the primary is 73.
+	_, sim := a.do("POST", "/api/plan/simulate", map[string]any{"trials": 50, "fast": true})
+	first := -1
+	for _, y := range sim["years"].([]any) {
+		r := y.(map[string]any)
+		if r["other_income"].(float64) > 0 {
+			first = int(r["age"].(float64))
+			break
+		}
+	}
+	if first != 73 {
+		t.Fatalf("spouse benefit should start at primary age 73, got %d", first)
+	}
+
+	// deleting a member reassigns their accounts to joint and events to self
+	if w, _ := a.do("DELETE", "/api/members/"+mid, nil); w.Code != 204 {
+		t.Fatalf("delete member: %d", w.Code)
+	}
+	for i := range []int{0} {
+		_ = i
+	}
+	rec, _ := a.do("GET", "/api/accounts", nil)
+	var accts []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &accts)
+	for _, ac := range accts {
+		if ac["owner"] == mid {
+			t.Fatalf("account still owned by deleted member: %v", ac)
+		}
+	}
+	rec, _ = a.do("GET", "/api/events", nil)
+	var evs []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &evs)
+	if len(evs) != 1 || evs[0]["owner"] != "self" {
+		t.Fatalf("event owner after delete: %v", evs)
+	}
+}

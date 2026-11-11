@@ -1,6 +1,6 @@
 import { computed, reactive } from 'vue'
 import { api, ApiError, setUnauthorizedHandler } from './api'
-import type { Account, PlanEvent, PlanResult, Profile, User } from './types'
+import type { Account, Member, PlanEvent, PlanResult, Profile, User } from './types'
 
 export const state = reactive({
   user: null as User | null,
@@ -8,6 +8,7 @@ export const state = reactive({
   loaded: false, // accounts/profile/events fetched
   accounts: [] as Account[],
   events: [] as PlanEvent[],
+  members: [] as Member[],
   profile: null as Profile | null,
   configured: false,
   plan: null as PlanResult | null,
@@ -28,9 +29,21 @@ export function errMsg(e: unknown): string {
   return e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Something went wrong'
 }
 
+const NAV_KEY = 'fw.navCollapsed'
+function readCollapsed(): boolean {
+  try { return localStorage.getItem(NAV_KEY) === '1' } catch { return false }
+}
+/** UI preferences that outlive a page load (not tied to the signed-in user). */
+export const ui = reactive({ navCollapsed: readCollapsed() })
+export function toggleNav() {
+  ui.navCollapsed = !ui.navCollapsed
+  try { localStorage.setItem(NAV_KEY, ui.navCollapsed ? '1' : '0') } catch { /* private mode */ }
+}
+
 export function resetData() {
   state.accounts = []
   state.events = []
+  state.members = []
   state.profile = null
   state.configured = false
   state.plan = null
@@ -54,9 +67,10 @@ export async function bootstrap() {
 
 export async function loadData(force = false) {
   if (state.loaded && !force) return
-  const [accounts, events, p] = await Promise.all([api.accounts(), api.events(), api.getProfile()])
+  const [accounts, events, members, p] = await Promise.all([api.accounts(), api.events(), api.members(), api.getProfile()])
   state.accounts = accounts
   state.events = events
+  state.members = members
   state.profile = p.profile
   state.configured = p.configured
   state.loaded = true
@@ -118,3 +132,30 @@ export const position = computed(() => {
     assets, liabilities, netWorth: assets - liabilities, monthlyContrib, monthlyDebtPay,
   }
 })
+
+// ---- people & ownership ----
+
+/** The signed-in person's display name: "First Last", else the email's local part. */
+export const displayName = computed(() => {
+  const p = state.profile
+  const full = [p?.first_name, p?.last_name].filter(Boolean).join(' ').trim()
+  return full || state.user?.email?.split('@')[0] || ''
+})
+export const firstName = computed(() => state.profile?.first_name?.trim() || state.user?.email?.split('@')[0] || '')
+
+/** Everyone the plan knows about; the first entry is the signed-in person. */
+export const people = computed(() => [
+  { key: 'self', name: state.profile?.first_name?.trim() || 'Me', age: state.profile?.current_age ?? 0 },
+  ...state.members.map((m) => ({ key: String(m.id), name: m.first_name, age: m.age })),
+])
+
+export function ownerName(owner: string | undefined): string {
+  if (owner === 'joint') return 'Joint'
+  return people.value.find((p) => p.key === (owner || 'self'))?.name ?? 'Me'
+}
+
+/** Years to add to a person's age to express it on the primary person's timeline. */
+export function ageShift(owner: string | undefined): number {
+  const p = people.value.find((x) => x.key === (owner || 'self'))
+  return p ? (state.profile?.current_age ?? p.age) - p.age : 0
+}

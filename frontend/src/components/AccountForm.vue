@@ -6,8 +6,8 @@ import NumField from './NumField.vue'
 import { api } from '@/lib/api'
 import { amortPayment, durationLabel, payoffMonths } from '@/lib/loan'
 import { money2, pct } from '@/lib/format'
-import { errMsg, invalidatePlan, state, toast } from '@/lib/store'
-import type { Account, AccountConfig, Category } from '@/lib/types'
+import { errMsg, invalidatePlan, people, state, toast } from '@/lib/store'
+import type { Account, AccountConfig, Category, Owner } from '@/lib/types'
 
 const props = defineProps<{ open: boolean; account: Account | null; initialCategory?: Category }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
@@ -20,7 +20,7 @@ const cats: { id: Category; label: string; icon: string; blurb: string }[] = [
   { id: 'debt', label: 'Debts', icon: 'debt', blurb: 'Student, auto, personal loans' },
 ]
 
-const form = reactive<{ name: string; category: Category; config: AccountConfig }>({ name: '', category: 'cash', config: { balance: 0 } })
+const form = reactive<{ name: string; category: Category; owner: Owner; config: AccountConfig }>({ name: '', category: 'cash', owner: 'self', config: { balance: 0 } })
 const busy = ref(false)
 const error = ref('')
 
@@ -40,10 +40,12 @@ watch(() => props.open, (o) => {
   if (props.account) {
     form.name = props.account.name
     form.category = props.account.category
+    form.owner = props.account.owner || 'self'
     form.config = { ...props.account.config }
   } else {
     const cat = props.initialCategory ?? 'cash'
     form.name = ''
+    form.owner = 'self'
     form.category = cat
     form.config = defaults(cat)
   }
@@ -59,7 +61,7 @@ const title = computed(() => (props.account ? 'Edit account' : 'Add account'))
 const estPayment = computed(() => amortPayment(form.config.balance, form.config.interest_rate ?? 0, form.config.remaining_years || 0))
 const payoff = computed(() =>
   form.category === 'mortgage' || form.category === 'debt' || form.category === 'credit_card'
-    ? durationLabel(payoffMonths({ id: 0, name: form.name, category: form.category, config: form.config }))
+    ? durationLabel(payoffMonths({ id: 0, name: form.name, category: form.category, owner: form.owner, config: form.config }))
     : '',
 )
 const utilization = computed(() => (form.config.credit_limit ? form.config.balance / form.config.credit_limit : 0))
@@ -70,7 +72,7 @@ async function save() {
   if (!form.name.trim()) { error.value = 'Give the account a name'; return }
   busy.value = true
   try {
-    const body = { name: form.name.trim(), category: form.category, config: { ...form.config } }
+    const body = { name: form.name.trim(), category: form.category, owner: form.owner, config: { ...form.config } }
     if (props.account) {
       const saved = await api.updateAccount({ ...body, id: props.account.id })
       const i = state.accounts.findIndex((a) => a.id === saved.id)
@@ -99,7 +101,15 @@ async function save() {
         </button>
       </div>
 
-      <label class="field"><span>Account name</span><input v-model="form.name" class="input" :placeholder="namePlaceholder" maxlength="80" required /></label>
+      <div class="form-grid">
+        <label class="field"><span>Account name</span><input v-model="form.name" class="input" :placeholder="namePlaceholder" maxlength="80" required /></label>
+        <label class="field"><span>Owner</span>
+          <select v-model="form.owner" class="input">
+            <option v-for="p in people" :key="p.key" :value="p.key">{{ p.name }}{{ p.key === 'self' ? ' (you)' : '' }}</option>
+            <option value="joint">Joint</option>
+          </select>
+        </label>
+      </div>
 
       <!-- CASH -->
       <div v-if="form.category === 'cash'" class="form-grid">

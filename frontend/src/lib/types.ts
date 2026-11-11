@@ -5,6 +5,9 @@ export type Strategy = 'smart' | 'taxable_first' | 'tax_deferred_first'
 export interface User { id: number; email: string }
 
 export interface Profile {
+  first_name: string
+  last_name: string
+  birth_year: number
   current_age: number
   retirement_age: number
   end_age: number
@@ -46,8 +49,20 @@ export interface AccountConfig {
   debt_kind?: string
 }
 
+export interface Member {
+  id: number
+  first_name: string
+  last_name: string
+  relationship: 'spouse' | 'partner' | 'child' | 'parent' | 'other'
+  age: number
+}
+
+/** "self", "joint", or a household member id (as a string). */
+export type Owner = string
+
 export interface Account {
   id: number
+  owner: Owner
   name: string
   category: Category
   config: AccountConfig
@@ -55,6 +70,7 @@ export interface Account {
 
 export interface PlanEvent {
   id: number
+  owner: Owner // start_age is this person's age
   kind: 'income' | 'spending'
   type: string
   name: string

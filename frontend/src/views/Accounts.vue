@@ -7,11 +7,12 @@ import Icon from '@/components/Icon.vue'
 import { api } from '@/lib/api'
 import { money, pct } from '@/lib/format'
 import { durationLabel, effectivePayment, payoffMonths } from '@/lib/loan'
-import { errMsg, invalidatePlan, loadData, position, state, toast } from '@/lib/store'
+import { errMsg, invalidatePlan, loadData, ownerName, people, position, state, toast } from '@/lib/store'
 import type { Account, Category } from '@/lib/types'
 
 const loading = ref(true)
 const filter = ref<'all' | Category>('all')
+const ownerFilter = ref<string>('all')
 const formOpen = ref(false)
 const editing = ref<Account | null>(null)
 const newCat = ref<Category>('cash')
@@ -31,7 +32,8 @@ const tabs = computed(() => [
   { id: 'all' as const, label: 'All', n: state.accounts.length },
   ...(Object.keys(meta) as Category[]).map((id) => ({ id, label: meta[id].plural, n: state.accounts.filter((a) => a.category === id).length })),
 ])
-const shown = computed(() => state.accounts.filter((a) => filter.value === 'all' || a.category === filter.value))
+const owners = computed(() => [{ key: 'all', name: 'Everyone' }, ...people.value.map((p) => ({ key: p.key, name: p.key === 'self' ? `${p.name} (you)` : p.name })), { key: 'joint', name: 'Joint' }])
+const shown = computed(() => state.accounts.filter((a) => (filter.value === 'all' || a.category === filter.value) && (ownerFilter.value === 'all' || (a.owner || 'self') === ownerFilter.value)))
 
 const treatment = { taxable: 'Taxable', tax_deferred: 'Tax-deferred', tax_free: 'Tax-free' } as const
 
@@ -83,8 +85,13 @@ const mix = computed(() => [
       <div class="glass pad rise" style="--i: 3"><div class="stat-label">Saving each month</div><div class="stat-value"><CountUp :value="position.monthlyContrib" /></div><div class="small faint">{{ money(position.monthlyContrib * 12) }}/yr into accounts</div></div>
     </div>
 
-    <div class="tabs filter" role="tablist" style="margin: 26px 0 18px">
-      <button v-for="t in tabs" :key="t.id" class="tab" :class="{ on: filter === t.id }" role="tab" @click="filter = t.id">{{ t.label }} <span class="faint">{{ t.n }}</span></button>
+    <div class="row wrap filters" style="margin: 26px 0 18px">
+      <div class="tabs filter" role="tablist" aria-label="Account type">
+        <button v-for="t in tabs" :key="t.id" class="tab" :class="{ on: filter === t.id }" role="tab" @click="filter = t.id">{{ t.label }} <span class="faint">{{ t.n }}</span></button>
+      </div>
+      <label v-if="people.length > 1" class="row ofilter"><span class="label">Owner</span>
+        <select v-model="ownerFilter" class="input" aria-label="Filter by owner"><option v-for="o in owners" :key="o.key" :value="o.key">{{ o.name }}</option></select>
+      </label>
     </div>
 
     <div v-if="loading" class="grid cols-3"><div v-for="i in 3" :key="i" class="skeleton" style="height: 150px" /></div>
@@ -102,7 +109,7 @@ const mix = computed(() => [
         <article v-for="(a, i) in shown" :key="a.id" class="glass hover acct" :style="{ '--i': i, '--c': meta[a.category].color }">
           <div class="ico"><Icon :name="meta[a.category].icon" :size="20" /></div>
           <div class="main">
-            <div class="cat-label">{{ meta[a.category].label }}</div>
+            <div class="cat-label">{{ meta[a.category].label }} <span v-if="people.length > 1 || a.owner === 'joint'" class="owner">· {{ ownerName(a.owner) }}</span></div>
             <h3>{{ a.name }}</h3>
             <div class="bal num" :class="{ neg: !['cash', 'investment'].includes(a.category) }">{{ !['cash', 'investment'].includes(a.category) ? '−' : '' }}{{ money(a.config.balance) }}</div>
             <div class="chips"><span v-for="d in details(a).filter(Boolean)" :key="d" class="chip">{{ d }}</span></div>
@@ -133,6 +140,9 @@ const mix = computed(() => [
 
 <style scoped>
 .filter { max-width: 100%; overflow-x: auto; }
+.ofilter { gap: 10px; margin-left: auto; }
+.ofilter .input { width: 170px; height: 40px; }
+.owner { color: var(--muted); font-weight: 600; letter-spacing: 0.02em; text-transform: none; }
 .split2 { display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 18px; align-items: start; }
 .cards { gap: 16px; }
 .acct { display: flex; gap: 16px; padding: 20px; animation: rise 0.6s var(--ease) both; animation-delay: calc(var(--i) * 60ms); }

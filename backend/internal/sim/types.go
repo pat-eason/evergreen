@@ -4,6 +4,8 @@
 // Crossover analyses.
 package sim
 
+import "strings"
+
 // Account categories.
 const (
 	CatCash       = "cash"
@@ -30,6 +32,9 @@ const (
 // Profile holds the global planning assumptions for a user. All rates are
 // decimals (0.07 == 7%).
 type Profile struct {
+	FirstName             string  `json:"first_name"`
+	LastName              string  `json:"last_name"`
+	BirthYear             int     `json:"birth_year"` // source of truth for age; current_age is derived from it
 	CurrentAge            int     `json:"current_age"`
 	RetirementAge         int     `json:"retirement_age"`
 	EndAge                int     `json:"end_age"`
@@ -75,6 +80,7 @@ func DefaultProfile() Profile {
 // Normalize clamps a profile into a sane, simulatable range.
 func (p *Profile) Normalize() {
 	d := DefaultProfile()
+	p.FirstName, p.LastName = cleanName(p.FirstName), cleanName(p.LastName)
 	if p.CurrentAge < 18 || p.CurrentAge > 100 {
 		p.CurrentAge = d.CurrentAge
 	}
@@ -166,6 +172,7 @@ type AccountConfig struct {
 // Account is a user-recorded financial account.
 type Account struct {
 	ID       int64         `json:"id"`
+	Owner    string        `json:"owner"` // "self", "joint", or a household member id
 	Name     string        `json:"name"`
 	Category string        `json:"category"`
 	Config   AccountConfig `json:"config"`
@@ -178,14 +185,23 @@ func (a Account) IsAsset() bool { return a.Category == CatCash || a.Category == 
 // spending goal (health care, travel, a car...) that starts at a given age.
 type Event struct {
 	ID                int64   `json:"id"`
-	Kind              string  `json:"kind"` // income | spending
-	Type              string  `json:"type"` // social_security, pension, part_time, rental, other / health, travel, home, other
+	Owner             string  `json:"owner"` // "self" or a household member id; StartAge is that person's age
+	Kind              string  `json:"kind"`  // income | spending
+	Type              string  `json:"type"`  // social_security, pension, part_time, rental, other / health, travel, home, other
 	Name              string  `json:"name"`
 	StartAge          int     `json:"start_age"`
 	Years             int     `json:"years"` // 0 = for life
 	AnnualAmount      float64 `json:"annual_amount"`
 	InflationAdjusted bool    `json:"inflation_adjusted"`
 	Taxable           bool    `json:"taxable"`
+}
+
+func cleanName(s string) string {
+	s = strings.TrimSpace(s)
+	if r := []rune(s); len(r) > 40 {
+		s = string(r[:40])
+	}
+	return s
 }
 
 func clamp(v, lo, hi float64) float64 {

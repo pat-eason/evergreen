@@ -8,7 +8,7 @@ import ProgressRing from '@/components/ProgressRing.vue'
 import Sparkline from '@/components/Sparkline.vue'
 import { api } from '@/lib/api'
 import { compact, currentMonth, greeting, money, monthLabel, pct } from '@/lib/format'
-import { ensurePlan, errMsg, loadData, position, state, toast } from '@/lib/store'
+import { ensurePlan, errMsg, firstName, loadData, position, state, toast } from '@/lib/store'
 import type { Budget, BudgetMonth, FreedomResult } from '@/lib/types'
 
 const loading = ref(true)
@@ -69,7 +69,7 @@ const showSteps = computed(() => steps.value.some((s) => !s.done))
   <main class="page">
     <div class="page-head">
       <div>
-        <h1>{{ greeting() }}, {{ state.user?.email?.split('@')[0] }}.</h1>
+        <h1>{{ greeting() }}, {{ firstName }}.</h1>
         <p>Your finances at a glance — what you have, where it's headed, and when you're free.</p>
       </div>
       <RouterLink to="/plan" class="btn accent"><Icon name="chart" :size="17" /> Open planner</RouterLink>

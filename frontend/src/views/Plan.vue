@@ -10,7 +10,7 @@ import { api } from '@/lib/api'
 import { iconFor } from '@/lib/eventTypes'
 import { compact, money, pct } from '@/lib/format'
 import { effectivePayment, payoffMonths } from '@/lib/loan'
-import { ensurePlan, errMsg, invalidatePlan, loadData, position, state, toast } from '@/lib/store'
+import { ageShift, ensurePlan, errMsg, invalidatePlan, loadData, ownerName, people, position, state, toast } from '@/lib/store'
 import type { Calculation, PlanEvent } from '@/lib/types'
 
 const loading = ref(true)
@@ -55,8 +55,9 @@ const series = computed<Series[]>(() => {
 })
 const dots = computed<Dot[]>(() => {
   const byAge = new Map(years.value.map((r) => [r.age, r.start.total]))
-  return state.events.filter((e) => byAge.has(e.start_age)).map((e) => ({
-    x: e.start_age, y: byAge.get(e.start_age)!, label: e.name, color: e.kind === 'income' ? 'var(--c-green)' : 'var(--c-rose)',
+  // event ages are the owner's; the chart runs on your timeline
+  return state.events.filter((e) => byAge.has(e.start_age + ageShift(e.owner))).map((e) => ({
+    x: e.start_age + ageShift(e.owner), y: byAge.get(e.start_age + ageShift(e.owner))!, label: e.name, color: e.kind === 'income' ? 'var(--c-green)' : 'var(--c-rose)',
   }))
 })
 
@@ -66,7 +67,8 @@ const liabs = computed(() => state.accounts.filter((a) => ['mortgage', 'credit_c
 
 function describe(e: PlanEvent): string {
   const dur = e.years === 0 ? 'for life' : `for ${e.years} year${e.years > 1 ? 's' : ''}`
-  return `Age: ${e.start_age} | ${money(e.annual_amount)}/yr ${dur}`
+  const who = people.value.length > 1 && e.owner && e.owner !== 'self' ? `${ownerName(e.owner)}, age ${e.start_age}` : `Age: ${e.start_age}`
+  return `${who} | ${money(e.annual_amount)}/yr ${dur}`
 }
 function describeLiab(a: (typeof liabs.value)[number]): string {
   const m = payoffMonths(a)

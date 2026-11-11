@@ -30,8 +30,22 @@ func pathID(r *http.Request) (int64, bool) {
 
 // ---------- profile ----------
 
+// loadProfile returns the stored profile with current_age derived from the
+// stored birth year, so age advances on its own.
+func (s *Server) loadProfile(r *http.Request, uid int64) (sim.Profile, bool, error) {
+	p, exists, err := s.st.GetProfile(r.Context(), uid)
+	if err != nil {
+		return p, false, err
+	}
+	if p.BirthYear > 0 {
+		p.CurrentAge = time.Now().Year() - p.BirthYear
+		p.Normalize()
+	}
+	return p, exists, nil
+}
+
 func (s *Server) getProfile(w http.ResponseWriter, r *http.Request) {
-	p, exists, err := s.st.GetProfile(r.Context(), userFrom(r.Context()).ID)
+	p, exists, err := s.loadProfile(r, userFrom(r.Context()).ID)
 	if err != nil {
 		serverErr(w, err)
 		return
@@ -51,7 +65,7 @@ func (s *Server) putProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if p.CurrentAge < 18 || p.CurrentAge > 100 {
-		writeErr(w, 400, "current age must be between 18 and 100")
+		writeErr(w, 400, "age must be between 18 and 100")
 		return
 	}
 	if p.RetirementAge < p.CurrentAge || p.RetirementAge > 100 {
@@ -63,11 +77,150 @@ func (s *Server) putProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Normalize()
+	p.BirthYear = time.Now().Year() - p.CurrentAge
 	if err := s.st.SaveProfile(r.Context(), u.ID, p); err != nil {
 		serverErr(w, err)
 		return
 	}
 	writeJSON(w, 200, map[string]any{"profile": p, "configured": true})
+}
+
+// ---------- household members ----------
+
+var validRelationships = map[string]bool{"spouse": true, "partner": true, "child": true, "parent": true, "other": true}
+
+type memberDTO struct {
+	ID           int64  `json:"id"`
+	FirstName    string `json:"first_name"`
+	LastName     string `json:"last_name"`
+	Relationship string `json:"relationship"`
+	Age          int    `json:"age"`
+}
+
+func toDTO(m store.Member) memberDTO {
+	return memberDTO{ID: m.ID, FirstName: m.FirstName, LastName: m.LastName, Relationship: m.Relationship, Age: time.Now().Year() - m.BirthYear}
+}
+
+func sanitizeMember(d memberDTO) (store.Member, string) {
+	m := store.Member{ID: d.ID, FirstName: strings.TrimSpace(d.FirstName), LastName: strings.TrimSpace(d.LastName), Relationship: d.Relationship}
+	if m.FirstName == "" || len([]rune(m.FirstName)) > 40 || len([]rune(m.LastName)) > 40 {
+		return m, "first name is required (max 40 characters)"
+	}
+	if m.Relationship == "" {
+		m.Relationship = "other"
+	}
+	if !validRelationships[m.Relationship] {
+		return m, "invalid relationship"
+	}
+	if d.Age < 0 || d.Age > 120 {
+		return m, "age must be between 0 and 120"
+	}
+	m.BirthYear = time.Now().Year() - d.Age
+	return m, ""
+}
+
+func (s *Server) listMembers(w http.ResponseWriter, r *http.Request) {
+	ms, err := s.st.ListMembers(r.Context(), userFrom(r.Context()).ID)
+	if err != nil {
+		serverErr(w, err)
+		return
+	}
+	out := make([]memberDTO, 0, len(ms))
+	for _, m := range ms {
+		out = append(out, toDTO(m))
+	}
+	writeJSON(w, 200, out)
+}
+
+func (s *Server) createMember(w http.ResponseWriter, r *http.Request) {
+	var d memberDTO
+	if !readJSON(w, r, &d) {
+		return
+	}
+	m, msg := sanitizeMember(d)
+	if msg != "" {
+		writeErr(w, 400, msg)
+		return
+	}
+	ms, err := s.st.ListMembers(r.Context(), userFrom(r.Context()).ID)
+	if err != nil {
+		serverErr(w, err)
+		return
+	}
+	if len(ms) >= 12 {
+		writeErr(w, 400, "household is limited to 12 members")
+		return
+	}
+	m, err = s.st.CreateMember(r.Context(), userFrom(r.Context()).ID, m)
+	if err != nil {
+		serverErr(w, err)
+		return
+	}
+	writeJSON(w, 201, toDTO(m))
+}
+
+func (s *Server) updateMember(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeErr(w, 400, "invalid id")
+		return
+	}
+	var d memberDTO
+	if !readJSON(w, r, &d) {
+		return
+	}
+	d.ID = id
+	m, msg := sanitizeMember(d)
+	if msg != "" {
+		writeErr(w, 400, msg)
+		return
+	}
+	if err := s.st.UpdateMember(r.Context(), userFrom(r.Context()).ID, m); err != nil {
+		notFoundOr500(w, err)
+		return
+	}
+	writeJSON(w, 200, toDTO(m))
+}
+
+func (s *Server) deleteMember(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathID(r)
+	if !ok {
+		writeErr(w, 400, "invalid id")
+		return
+	}
+	if err := s.st.DeleteMember(r.Context(), userFrom(r.Context()).ID, id); err != nil {
+		notFoundOr500(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// resolveOwner validates an owner value: "self", "joint" (accounts only) or the
+// id of one of the user's household members. Empty means "self".
+func (s *Server) resolveOwner(r *http.Request, uid int64, owner string, allowJoint bool) (string, string) {
+	switch owner {
+	case "", "self":
+		return "self", ""
+	case "joint":
+		if allowJoint {
+			return "joint", ""
+		}
+		return "", "events belong to a person, not the household"
+	}
+	id, err := strconv.ParseInt(owner, 10, 64)
+	if err != nil {
+		return "", "invalid owner"
+	}
+	ms, err := s.st.ListMembers(r.Context(), uid)
+	if err != nil {
+		return "", "could not verify owner"
+	}
+	for _, m := range ms {
+		if m.ID == id {
+			return owner, ""
+		}
+	}
+	return "", "owner is not in your household"
 }
 
 // ---------- accounts ----------
@@ -152,6 +305,9 @@ func (s *Server) createAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a, msg := sanitizeAccount(a)
+	if msg == "" {
+		a.Owner, msg = s.resolveOwner(r, userFrom(r.Context()).ID, a.Owner, true)
+	}
 	if msg != "" {
 		writeErr(w, 400, msg)
 		return
@@ -176,6 +332,9 @@ func (s *Server) updateAccount(w http.ResponseWriter, r *http.Request) {
 	}
 	a.ID = id
 	a, msg := sanitizeAccount(a)
+	if msg == "" {
+		a.Owner, msg = s.resolveOwner(r, userFrom(r.Context()).ID, a.Owner, true)
+	}
 	if msg != "" {
 		writeErr(w, 400, msg)
 		return
@@ -244,6 +403,9 @@ func (s *Server) createEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	e, msg := sanitizeEvent(e)
+	if msg == "" {
+		e.Owner, msg = s.resolveOwner(r, userFrom(r.Context()).ID, e.Owner, false)
+	}
 	if msg != "" {
 		writeErr(w, 400, msg)
 		return
@@ -268,6 +430,9 @@ func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	e.ID = id
 	e, msg := sanitizeEvent(e)
+	if msg == "" {
+		e.Owner, msg = s.resolveOwner(r, userFrom(r.Context()).ID, e.Owner, false)
+	}
 	if msg != "" {
 		writeErr(w, 400, msg)
 		return
@@ -517,7 +682,7 @@ func (s *Server) applyBudget(w http.ResponseWriter, r *http.Request) {
 			updated++
 		}
 	}
-	p, _, err := s.st.GetProfile(r.Context(), u.ID)
+	p, _, err := s.loadProfile(r, u.ID)
 	if err != nil {
 		serverErr(w, err)
 		return
@@ -537,7 +702,7 @@ func (s *Server) applyBudget(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) loadInputs(r *http.Request) (sim.Inputs, error) {
 	uid := userFrom(r.Context()).ID
-	p, _, err := s.st.GetProfile(r.Context(), uid)
+	p, _, err := s.loadProfile(r, uid)
 	if err != nil {
 		return sim.Inputs{}, err
 	}
@@ -549,7 +714,23 @@ func (s *Server) loadInputs(r *http.Request) (sim.Inputs, error) {
 	if err != nil {
 		return sim.Inputs{}, err
 	}
-	return sim.Inputs{Profile: p, Accounts: as, Events: es, BaseYear: time.Now().Year()}, nil
+	ms, err := s.st.ListMembers(r.Context(), uid)
+	if err != nil {
+		return sim.Inputs{}, err
+	}
+	// An event's start age is the owner's age. The engine runs on the primary
+	// person's timeline, so shift member events by the age difference.
+	year := time.Now().Year()
+	offset := map[string]int{}
+	for _, m := range ms {
+		offset[strconv.FormatInt(m.ID, 10)] = p.CurrentAge - (year - m.BirthYear)
+	}
+	for i := range es {
+		if d, ok := offset[es[i].Owner]; ok {
+			es[i].StartAge += d
+		}
+	}
+	return sim.Inputs{Profile: p, Accounts: as, Events: es, BaseYear: year}, nil
 }
 
 func (s *Server) simulate(w http.ResponseWriter, r *http.Request) {

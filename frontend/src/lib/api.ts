@@ -1,5 +1,5 @@
 import type {
-  Account, Budget, BudgetMonth, Calculation, FreedomInputs, FreedomResult, PlanEvent, PlanResult, Profile, User,
+  Account, Member, Budget, BudgetMonth, Calculation, FreedomInputs, FreedomResult, PlanEvent, PlanResult, Profile, User,
 } from './types'
 
 export class ApiError extends Error {
@@ -33,6 +33,11 @@ export const api = {
   me: () => req<User>('GET', '/me'),
   changeEmail: (email: string, password: string) => req<User>('PUT', '/me/email', { email, password }),
   changePassword: (current_password: string, new_password: string) => req<{ ok: boolean }>('PUT', '/me/password', { current_password, new_password }),
+
+  members: () => req<Member[]>('GET', '/members'),
+  createMember: (m: Omit<Member, 'id'>) => req<Member>('POST', '/members', m),
+  updateMember: (m: Member) => req<Member>('PUT', `/members/${m.id}`, m),
+  deleteMember: (id: number) => req<void>('DELETE', `/members/${id}`),
 
   getProfile: () => req<{ profile: Profile; configured: boolean }>('GET', '/profile'),
   saveProfile: (p: Profile) => req<{ profile: Profile; configured: boolean }>('PUT', '/profile', p),

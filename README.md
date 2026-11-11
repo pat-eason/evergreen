@@ -58,7 +58,9 @@ cd frontend && pnpm typecheck && pnpm build
 - **Plan** — Monte Carlo projection (median vs 10th percentile), probability of success, sustainable spending, income events (Social Security, pension, part-time…), spending goals (health care, travel…), and a detailed cash-flow table. Snapshots can be saved.
 - **Smart Withdrawal** — year-by-year retirement income sources (income events, taxable, tax-deferred, tax-free), estimated taxes, budgeted spending and portfolio balance, with expandable detail, RMDs, optional Roth conversions, and a side-by-side strategy comparison.
 - **Freedom** — Contribution Crossover, Coast FIRE and Financial Freedom with what-if sliders (retirement age, contributions, spending, return, SWR, inflation) and saved snapshots.
-- **Auth** — username/password registration and sign-in; sessions are HttpOnly cookies, passwords are bcrypt-hashed, and every record is scoped to its owner.
+- **Profile & household** — first/last name and age (stored as a birth year, so ages advance on their own and feed every projection), plus household members. Accounts can be owned by you, a member, or Joint; income events like Social Security use their owner's age and are shifted onto your timeline.
+- **Navigation** — a left sidebar on tablet-landscape and wider screens (collapsible to an icon rail with hover popovers, remembered per browser), a top bar on smaller screens. The account menu (Edit profile, Account & security, Sign out) lives at the bottom of the sidebar / top-right of the bar.
+- **Auth** — email/password registration and sign-in; sessions are HttpOnly cookies, passwords are bcrypt-hashed, and every record is scoped to its owner.
 
 ## How the simulations work
 
@@ -81,4 +83,4 @@ All of it lives in [`backend/internal/sim`](backend/internal/sim).
 
 All routes are under `/api`, JSON, cookie-authenticated except `auth/*` and `health`.
 
-`POST auth/register|login|logout` · `GET me` · `GET|PUT profile` · `GET|POST accounts`, `PUT|DELETE accounts/{id}` · `GET|POST events`, `PUT|DELETE events/{id}` · `GET budgets`, `GET|PUT|DELETE budgets/{YYYY-MM}`, `POST budgets/{month}/copy|apply` · `POST plan/simulate` · `POST freedom/analyze` · `GET|POST calculations`, `DELETE calculations/{id}`
+`POST auth/register|login|logout` · `GET me`, `PUT me/email|password` · `GET|PUT profile` · `GET|POST members`, `PUT|DELETE members/{id}` · `GET|POST accounts`, `PUT|DELETE accounts/{id}` · `GET|POST events`, `PUT|DELETE events/{id}` · `GET budgets`, `GET|PUT|DELETE budgets/{YYYY-MM}`, `POST budgets/{month}/copy|apply` · `POST plan/simulate` · `POST freedom/analyze` · `GET|POST calculations`, `DELETE calculations/{id}`
