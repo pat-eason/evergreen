@@ -1,0 +1,27 @@
+services:
+  api:
+    build: ./backend
+    restart: unless-stopped
+    environment:
+      DB_PATH: /data/wellness.db
+      # Set to "true" if you serve the app over HTTPS
+      COOKIE_SECURE: "false"
+    volumes:
+      - wellness-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/api/health >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8080:80"
+
+volumes:
+  wellness-data:
