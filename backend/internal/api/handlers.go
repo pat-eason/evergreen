@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patrickeason/financial-wellness/backend/internal/ledger"
 	"github.com/patrickeason/financial-wellness/backend/internal/sim"
 	"github.com/patrickeason/financial-wellness/backend/internal/store"
 )
@@ -317,6 +318,7 @@ func (s *Server) createAccount(w http.ResponseWriter, r *http.Request) {
 		serverErr(w, err)
 		return
 	}
+	s.record(r, userFrom(r.Context()).ID, ledgerEntry(out, ledger.KindCreated, ledger.ReasonInitial, "", time.Now()))
 	writeJSON(w, 201, out)
 }
 
@@ -339,10 +341,16 @@ func (s *Server) updateAccount(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, msg)
 		return
 	}
+	before, err := s.st.GetAccount(r.Context(), userFrom(r.Context()).ID, id)
+	if err != nil {
+		notFoundOr500(w, err)
+		return
+	}
 	if err := s.st.UpdateAccount(r.Context(), userFrom(r.Context()).ID, a); err != nil {
 		notFoundOr500(w, err)
 		return
 	}
+	s.recordUpdate(r, userFrom(r.Context()).ID, before, a)
 	writeJSON(w, 200, a)
 }
 
@@ -352,10 +360,17 @@ func (s *Server) deleteAccount(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "invalid id")
 		return
 	}
-	if err := s.st.DeleteAccount(r.Context(), userFrom(r.Context()).ID, id); err != nil {
+	uid := userFrom(r.Context()).ID
+	before, err := s.st.GetAccount(r.Context(), uid, id)
+	if err != nil {
 		notFoundOr500(w, err)
 		return
 	}
+	if err := s.st.DeleteAccount(r.Context(), uid, id); err != nil {
+		notFoundOr500(w, err)
+		return
+	}
+	s.record(r, uid, ledgerEntry(before, ledger.KindDeleted, ledger.ReasonRemoved, "", time.Now()))
 	w.WriteHeader(http.StatusNoContent)
 }
 

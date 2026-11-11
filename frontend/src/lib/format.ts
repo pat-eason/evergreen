@@ -37,3 +37,26 @@ export function greeting(): string {
   const h = new Date().getHours()
   return h < 12 ? 'Good morning' : h < 18 ? 'Good afternoon' : 'Good evening'
 }
+
+/** "2026-03-04" -> a Date at local midnight (avoids the UTC off-by-one of new Date(iso)). */
+export function parseDay(iso: string): Date {
+  const [y, m, d] = iso.slice(0, 10).split('-').map(Number)
+  return new Date(y, m - 1, d)
+}
+/** Days since the epoch, used as a numeric chart x value. */
+export const dayNumber = (iso: string) => {
+  const [y, m, d] = iso.slice(0, 10).split('-').map(Number)
+  return Math.round(Date.UTC(y, m - 1, d) / 86_400_000)
+}
+export function fromDayNumber(n: number): Date { return new Date(n * 86_400_000) }
+export function shortDate(d: Date, withYear = false): string {
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(withYear ? { year: 'numeric' } : {}) })
+}
+export function dateTime(iso: string): string {
+  return new Date(iso).toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })
+}
+export function todayISO(): string {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+export const signedPct = (v: number, digits = 1) => `${v > 0 ? '+' : v < 0 ? '-' : ''}${Math.abs(v * 100).toFixed(digits)}%`

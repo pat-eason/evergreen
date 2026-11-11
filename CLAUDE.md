@@ -42,6 +42,12 @@ There is no linter or frontend test suite. `.claude/launch.json` defines `api` (
 - **Age is stored as `birth_year`** (profile and household members); `current_age`/`age` are derived on read (`loadProfile`, `toDTO`) so ages advance on their own. Saving converts age back to a birth year.
 - **Event ages belong to their owner.** `loadInputs` shifts a member's event `StartAge` by (primary age − member age) so the engine only ever runs on the primary person's timeline. The UI converts back with `ageShift()` when placing chart markers.
 
+### Ledger (`internal/ledger`, `api/ledger.go`)
+- Append-only `ledger` table; account create / balance change / settings edit / delete each add a row (hooked in the account handlers, plus `POST /accounts/{id}/value` for dated "record a value"). `account_id` is deliberately **not** a foreign key so history outlives the account. Existing accounts get a starting entry from the backfill SQL in `store.Open` (idempotent).
+- Each row stores the balance **after** the event; `Previous`/`Delta` are derived on read (`Annotate`), so backdated entries never leave stale deltas. `occurred_at` uses a fixed-width timestamp format because it is sorted as text.
+- `Build` replays entries into `Point`s (net worth, assets, liabilities, per-category, per-account series). Mortgages carry the home value in `asset_value`. An account's **first** entry is its opening balance and counts as a contribution (even if it was backfilled before the "created" row); later `deposit`/`withdrawal` reasons are flows; everything else is growth/loss. Deleting an account is a withdrawal, so growth already earned is not erased.
+- A dated value earlier than the account's latest entry only adds history (`applied: false`); it does not change the live balance.
+
 ### Simulation engine (`internal/sim`)
 - `Prepare(Inputs)` builds a `Plan` (four buckets: cash / taxable with cost basis / tax-deferred / tax-free; liability schedules; weighted per-bucket returns). `Plan.Simulate(z, scale, detail, starts)` runs one path; `RunPlan` combines the detailed median path with Monte Carlo bands.
 - Returns are log-normal. Passing `z == nil` gives the **median-market path** (used for table detail, withdrawal breakdowns and the "median" chart line); MC trials pass seeded normal shocks (deterministic by seed). "Success" = every year's spending fully funded.
@@ -52,6 +58,6 @@ There is no linter or frontend test suite. `.claude/launch.json` defines `api` (
 
 ### Frontend (`frontend/src`)
 - No state library: `lib/store.ts` holds one `reactive` `state` (user, accounts, events, members, profile, cached `plan`) plus derived `position`, `people`, `displayName`. Pages call `loadData()` / `ensurePlan()`; mutations call `invalidatePlan()`. After a profile/household change bump `state.profileRev`, which views watch to refetch their own derived data (Dashboard, Plan, Withdrawal, Freedom).
-- `lib/api.ts` is the only fetch wrapper (same-origin cookies; a 401 outside `/auth/*` clears the session). Types in `lib/types.ts` mirror the Go JSON.
+- History page (`views/History.vue`), the Accounts sparklines and the Dashboard card all read `GET /api/ledger/history`; `ValueDrawer` is the "record a value" form. `LineChart` takes `fromZero=false` to zoom timelines to the data. `lib/api.ts` is the only fetch wrapper (same-origin cookies; a 401 outside `/auth/*` clears the session). Types in `lib/types.ts` mirror the Go JSON.
 - Charts (`LineChart`, `StackedBars`, `DonutChart`, `ProgressRing`) are hand-written SVG with no chart library; styling is a single token-based `styles/main.css` (brand palette in `:root`: primary `#250104`, secondary `#071a06`, accent `#cdf73d`).
 - Layout: `AppShell` is a fixed left sidebar at >=1024px (collapsible to an icon rail, preference in localStorage via `ui` in the store) and a top bar below; `App.vue` offsets content with a `.has-nav` / `.collapsed` padding. The profile/account drawers are mounted in `AppShell`, so they are available on every page.

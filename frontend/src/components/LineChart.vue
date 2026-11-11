@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, useId } from 'vue'
-import { monotonePath, nearestIndex, niceScale, type Pt } from '@/lib/chart'
+import { monotonePath, nearestIndex, niceBounds, niceRange, niceScale, type Pt } from '@/lib/chart'
 import { compact } from '@/lib/format'
 import { useTween } from '@/lib/anim'
 
@@ -17,8 +17,10 @@ const props = withDefaults(defineProps<{
   xFormat?: (v: number) => string
   xTicks?: number[]
   yMax?: number
+  /** false zooms the y axis to the data instead of anchoring at zero (good for timelines of large balances) */
+  fromZero?: boolean
 }>(), {
-  height: 320, vlines: () => [], dots: () => [], yFormat: compact, xFormat: (v: number) => String(v),
+  fromZero: true, height: 320, vlines: () => [], dots: () => [], yFormat: compact, xFormat: (v: number) => String(v),
 })
 
 const uid = useId().replace(/[^a-zA-Z0-9]/g, '')
@@ -45,17 +47,24 @@ const xs = computed(() => {
   return { min: Math.min(...all, Infinity) === Infinity ? 0 : Math.min(...all), max: Math.max(...all, -Infinity) === -Infinity ? 1 : Math.max(...all) }
 })
 const yScale = computed(() => {
-  const m = Math.max(0, ...props.series.flatMap((s) => s.points.map((p) => p.y)))
-  return props.yMax ? niceScale(props.yMax) : niceScale(m * 1.04)
+  const vals = props.series.flatMap((s) => s.points.map((p) => p.y))
+  if (!props.fromZero && vals.length) {
+    const mn = Math.min(...vals), mx = Math.max(...vals)
+    const pad = (mx - mn || Math.abs(mx) * 0.1 || 1) * 0.12
+    return niceBounds(mn - pad, mx + pad)
+  }
+  const lo = Math.min(0, ...vals), hi = Math.max(0, ...vals)
+  if (props.yMax && lo >= 0) { const s = niceScale(props.yMax); return { min: 0, max: s.max, ticks: s.ticks } }
+  return niceRange(lo * (lo < 0 ? 1.04 : 1), hi * 1.04)
 })
 const sx = (x: number) => pad.l + ((x - xs.value.min) / (xs.value.max - xs.value.min || 1)) * innerW.value
-const sy = (y: number) => pad.t + innerH.value - (y / yScale.value.max) * innerH.value
+const sy = (y: number) => pad.t + innerH.value - ((y - yScale.value.min) / (yScale.value.max - yScale.value.min || 1)) * innerH.value
 
 const paths = computed(() =>
   props.series.map((s) => {
     const pts = s.points.map((p) => ({ x: sx(p.x), y: sy(p.y) }))
     const line = monotonePath(pts)
-    const base = sy(0)
+    const base = sy(Math.max(0, yScale.value.min)) // fill down to zero, or to the floor when zoomed
     const area = pts.length ? `${line} L${pts[pts.length - 1].x},${base} L${pts[0].x},${base} Z` : ''
     return { line, area }
   }),
@@ -135,7 +144,7 @@ const tipLeft = computed(() => {
       </g>
 
       <g v-for="v in vlines" :key="v.label + v.x" :style="{ opacity: reveal > 0.6 ? 1 : 0, transition: 'opacity .6s' }">
-        <line :x1="sx(v.x)" :x2="sx(v.x)" :y1="pad.t" :y2="sy(0)" :stroke="v.color ?? 'rgba(255,255,255,.55)'" stroke-width="1.5" stroke-dasharray="4 4" />
+        <line :x1="sx(v.x)" :x2="sx(v.x)" :y1="pad.t" :y2="pad.t + innerH" :stroke="v.color ?? 'rgba(255,255,255,.55)'" stroke-width="1.5" stroke-dasharray="4 4" />
         <text :x="sx(v.x) + 6" :y="pad.t + 11" class="vl" :fill="v.color ?? 'rgba(255,255,255,.8)'">{{ v.label }}</text>
       </g>
 
@@ -145,7 +154,7 @@ const tipLeft = computed(() => {
       </g>
 
       <g v-if="hoverData">
-        <line :x1="sx(hoverData.x)" :x2="sx(hoverData.x)" :y1="pad.t" :y2="sy(0)" stroke="rgba(255,255,255,.5)" />
+        <line :x1="sx(hoverData.x)" :x2="sx(hoverData.x)" :y1="pad.t" :y2="pad.t + innerH" stroke="rgba(255,255,255,.5)" />
         <circle v-for="r in hoverData.rows" :key="r.label" :cx="sx(hoverData.x)" :cy="sy(r.y)" r="5" :fill="r.color" stroke="#fff" stroke-width="1.5" />
       </g>
       <rect :x="pad.l" :y="pad.t" :width="innerW" :height="innerH" fill="transparent" />

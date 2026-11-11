@@ -1,5 +1,5 @@
 import type {
-  Account, Member, Budget, BudgetMonth, Calculation, FreedomInputs, FreedomResult, PlanEvent, PlanResult, Profile, User,
+  Account, History, LedgerEntry, Member, ValueReason, Budget, BudgetMonth, Calculation, FreedomInputs, FreedomResult, PlanEvent, PlanResult, Profile, User,
 } from './types'
 
 export class ApiError extends Error {
@@ -26,6 +26,11 @@ async function req<T>(method: string, path: string, body?: unknown): Promise<T> 
   return data as T
 }
 
+function qs(o: Record<string, string | number | undefined>): string {
+  const p = Object.entries(o).filter(([, v]) => v !== undefined && v !== 0 && v !== '')
+  return p.length ? '?' + new URLSearchParams(p.map(([k, v]) => [k, String(v)])).toString() : ''
+}
+
 export const api = {
   register: (email: string, password: string) => req<User>('POST', '/auth/register', { email, password }),
   login: (email: string, password: string) => req<User>('POST', '/auth/login', { email, password }),
@@ -33,6 +38,13 @@ export const api = {
   me: () => req<User>('GET', '/me'),
   changeEmail: (email: string, password: string) => req<User>('PUT', '/me/email', { email, password }),
   changePassword: (current_password: string, new_password: string) => req<{ ok: boolean }>('PUT', '/me/password', { current_password, new_password }),
+
+  recordValue: (id: number, v: { balance: number; home_value?: number; reason: ValueReason; as_of?: string; note?: string }) =>
+    req<{ account: Account; applied: boolean }>('POST', `/accounts/${id}/value`, v),
+  ledger: (q: { account_id?: number; limit?: number; offset?: number } = {}) =>
+    req<{ entries: LedgerEntry[]; total: number }>('GET', '/ledger' + qs(q)),
+  history: (q: { months?: number; interval?: string; account_id?: number; by_account?: boolean } = {}) =>
+    req<History>('GET', '/ledger/history' + qs({ ...q, by_account: q.by_account ? 1 : undefined })),
 
   members: () => req<Member[]>('GET', '/members'),
   createMember: (m: Omit<Member, 'id'>) => req<Member>('POST', '/members', m),

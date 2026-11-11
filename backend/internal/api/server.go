@@ -89,6 +89,10 @@ func (s *Server) routes() {
 	m.HandleFunc("PUT /api/accounts/{id}", s.auth(s.updateAccount))
 	m.HandleFunc("DELETE /api/accounts/{id}", s.auth(s.deleteAccount))
 
+	m.HandleFunc("POST /api/accounts/{id}/value", s.auth(s.recordValue))
+	m.HandleFunc("GET /api/ledger", s.auth(s.listLedger))
+	m.HandleFunc("GET /api/ledger/history", s.auth(s.ledgerHistory))
+
 	m.HandleFunc("GET /api/events", s.auth(s.listEvents))
 	m.HandleFunc("POST /api/events", s.auth(s.createEvent))
 	m.HandleFunc("PUT /api/events/{id}", s.auth(s.updateEvent))

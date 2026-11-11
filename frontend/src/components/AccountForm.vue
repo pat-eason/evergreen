@@ -174,6 +174,7 @@ async function save() {
         <NumField v-model="form.config.monthly_payment" kind="money" label="Monthly payment" :hint="estPayment ? `blank = ${money2(estPayment)}` : ''" />
       </div>
 
+      <p v-if="account && form.config.balance !== account.config.balance" class="payoff"><Icon name="info" :size="16" /> This balance change is saved to your history as a value change. To log a deposit, withdrawal or payment, use <b>Record a value</b> instead.</p>
       <p v-if="payoff && form.config.balance > 0" class="payoff"><Icon name="info" :size="16" /> Paid off in <b>{{ payoff }}</b> at this payment.</p>
       <p v-if="error" class="err" role="alert">{{ error }}</p>
     </form>

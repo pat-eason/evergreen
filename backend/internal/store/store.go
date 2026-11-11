@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/patrickeason/financial-wellness/backend/internal/ledger"
 	"github.com/patrickeason/financial-wellness/backend/internal/sim"
 	_ "modernc.org/sqlite"
 )
@@ -62,6 +63,25 @@ CREATE TABLE IF NOT EXISTS accounts (
   updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id);
+-- Append-only log of account changes. account_id is deliberately not a foreign
+-- key: history must outlive the account.
+CREATE TABLE IF NOT EXISTS ledger (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  account_id INTEGER NOT NULL,
+  account_name TEXT NOT NULL,
+  category TEXT NOT NULL,
+  owner TEXT NOT NULL DEFAULT 'self',
+  kind TEXT NOT NULL,
+  reason TEXT NOT NULL DEFAULT '',
+  balance REAL NOT NULL,
+  asset_value REAL NOT NULL DEFAULT 0,
+  note TEXT NOT NULL DEFAULT '',
+  occurred_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_user_time ON ledger(user_id, occurred_at);
+CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger(user_id, account_id);
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -145,6 +165,19 @@ func Open(path string) (*Store, error) {
 				return nil, fmt.Errorf("migrate %s.%s: %w", m.table, m.col, err)
 			}
 		}
+	}
+	// Accounts that predate the ledger get a starting entry at their creation
+	// time. Idempotent: only accounts with no entries are touched.
+	if _, err := db.Exec(`
+INSERT INTO ledger(user_id,account_id,account_name,category,owner,kind,reason,balance,asset_value,note,occurred_at,created_at)
+SELECT a.user_id, a.id, a.name, a.category, a.owner, 'created', 'initial',
+  COALESCE(json_extract(a.config,'$.balance'),0),
+  CASE WHEN a.category='mortgage' THEN COALESCE(json_extract(a.config,'$.home_value'),0) ELSE 0 END,
+  '', substr(a.created_at,1,19) || '.000000000Z', a.created_at
+FROM accounts a
+WHERE NOT EXISTS (SELECT 1 FROM ledger l WHERE l.account_id=a.id AND l.user_id=a.user_id)`); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("backfill ledger: %w", err)
 	}
 	return &Store{db: db}, nil
 }
@@ -679,4 +712,66 @@ func (s *Store) DeleteCalculation(ctx context.Context, uid, id int64) error {
 		return ErrNotFound
 	}
 	return nil
+}
+
+// ---------- ledger ----------
+
+// ledgerTime is fixed-width so the text column sorts chronologically (RFC3339Nano
+// trims trailing zeros, which breaks lexical ordering).
+const ledgerTime = "2006-01-02T15:04:05.000000000Z"
+
+// AddLedger appends an entry.
+func (s *Store) AddLedger(ctx context.Context, uid int64, e ledger.Entry) (ledger.Entry, error) {
+	if e.OccurredAt.IsZero() {
+		e.OccurredAt = time.Now()
+	}
+	e.OccurredAt = e.OccurredAt.UTC()
+	res, err := s.db.ExecContext(ctx, `INSERT INTO ledger(user_id,account_id,account_name,category,owner,kind,reason,balance,asset_value,note,occurred_at,created_at)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		uid, e.AccountID, e.AccountName, e.Category, e.Owner, e.Kind, e.Reason, e.Balance, e.AssetValue, e.Note,
+		e.OccurredAt.Format(ledgerTime), now())
+	if err != nil {
+		return e, err
+	}
+	e.ID, _ = res.LastInsertId()
+	return e, nil
+}
+
+// ListLedger returns the user's entries in chronological order (not yet
+// annotated), optionally restricted to one account.
+func (s *Store) ListLedger(ctx context.Context, uid, accountID int64) ([]ledger.Entry, error) {
+	q := `SELECT id,account_id,account_name,category,owner,kind,reason,balance,asset_value,note,occurred_at FROM ledger WHERE user_id=?`
+	args := []any{uid}
+	if accountID != 0 {
+		q += ` AND account_id=?`
+		args = append(args, accountID)
+	}
+	q += ` ORDER BY occurred_at, id`
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []ledger.Entry{}
+	for rows.Next() {
+		var e ledger.Entry
+		var at string
+		if err := rows.Scan(&e.ID, &e.AccountID, &e.AccountName, &e.Category, &e.Owner, &e.Kind, &e.Reason, &e.Balance, &e.AssetValue, &e.Note, &at); err != nil {
+			return nil, err
+		}
+		e.OccurredAt, _ = time.Parse(time.RFC3339Nano, at)
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// LatestLedgerTime returns when an account's most recent entry occurred.
+func (s *Store) LatestLedgerTime(ctx context.Context, uid, accountID int64) (time.Time, bool, error) {
+	var at sql.NullString
+	err := s.db.QueryRowContext(ctx, `SELECT MAX(occurred_at) FROM ledger WHERE user_id=? AND account_id=?`, uid, accountID).Scan(&at)
+	if err != nil || !at.Valid {
+		return time.Time{}, false, err
+	}
+	t, _ := time.Parse(time.RFC3339Nano, at.String)
+	return t, true, nil
 }

@@ -1,25 +1,54 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import AccountForm from '@/components/AccountForm.vue'
+import Sparkline from '@/components/Sparkline.vue'
+import ValueDrawer from '@/components/ValueDrawer.vue'
 import CountUp from '@/components/CountUp.vue'
 import DonutChart from '@/components/DonutChart.vue'
 import Icon from '@/components/Icon.vue'
 import { api } from '@/lib/api'
-import { money, pct } from '@/lib/format'
+import { money, pct, signedMoney } from '@/lib/format'
 import { durationLabel, effectivePayment, payoffMonths } from '@/lib/loan'
 import { errMsg, invalidatePlan, loadData, ownerName, people, position, state, toast } from '@/lib/store'
-import type { Account, Category } from '@/lib/types'
+import type { Account, Category, History } from '@/lib/types'
 
 const loading = ref(true)
 const filter = ref<'all' | Category>('all')
 const ownerFilter = ref<string>('all')
 const formOpen = ref(false)
+const valueOpen = ref(false)
+const valueFor = ref<Account | null>(null)
+const hist = ref<History | null>(null)
 const editing = ref<Account | null>(null)
 const newCat = ref<Category>('cash')
 
+async function loadHist() {
+  try { hist.value = await api.history({ months: 6, interval: 'week', by_account: true }) } catch { /* sparklines are optional */ }
+}
 onMounted(async () => {
   try { await loadData() } catch (e) { toast(errMsg(e), 'err') } finally { loading.value = false }
+  loadHist()
 })
+
+// balance trend per account over the last 6 months, from the ledger
+const trend = computed(() => {
+  const out = new Map<number, { values: number[]; change: number; since: string }>()
+  const h = hist.value
+  if (!h?.series || h.points.length < 2) return out
+  for (const a of state.accounts) {
+    const s = h.series[String(a.id)]
+    if (!s || s.length < 2) continue
+    const firstIdx = s.findIndex((v, i) => v > 0 || i === s.length - 1)
+    const vals = s.slice(firstIdx)
+    if (vals.length < 2 || new Set(vals).size < 2) continue
+    out.set(a.id, { values: vals, change: vals[vals.length - 1] - vals[0], since: h.points[firstIdx].date })
+  }
+  return out
+})
+const isAsset = (a: Account) => a.category === 'cash' || a.category === 'investment'
+// owing less is good; holding more is good
+const trendGood = (a: Account, change: number) => (isAsset(a) ? change >= 0 : change <= 0)
+function recordValue(a: Account | null) { valueFor.value = a; valueOpen.value = true }
 
 const meta: Record<Category, { label: string; plural: string; icon: string; color: string }> = {
   cash: { label: 'Cash', plural: 'Cash', icon: 'bank', color: 'var(--c-mint)' },
@@ -75,7 +104,10 @@ const mix = computed(() => [
         <h1>Accounts</h1>
         <p>Record what you own and owe. Each type has its own settings that feed the retirement and freedom projections.</p>
       </div>
-      <button class="btn accent" @click="add()"><Icon name="plus" :size="18" /> Add account</button>
+      <div class="row wrap">
+        <button class="btn" :disabled="!state.accounts.length" @click="recordValue(null)"><Icon name="trend" :size="17" /> Record a value</button>
+        <button class="btn accent" @click="add()"><Icon name="plus" :size="18" /> Add account</button>
+      </div>
     </div>
 
     <div class="grid cols-4">
@@ -113,8 +145,14 @@ const mix = computed(() => [
             <h3>{{ a.name }}</h3>
             <div class="bal num" :class="{ neg: !['cash', 'investment'].includes(a.category) }">{{ !['cash', 'investment'].includes(a.category) ? '−' : '' }}{{ money(a.config.balance) }}</div>
             <div class="chips"><span v-for="d in details(a).filter(Boolean)" :key="d" class="chip">{{ d }}</span></div>
+            <div v-if="trend.get(a.id)" class="trend">
+              <Sparkline :values="trend.get(a.id)!.values" :width="96" :height="28" :color="trendGood(a, trend.get(a.id)!.change) ? 'var(--accent)' : 'var(--danger)'" />
+              <span class="num small" :class="trendGood(a, trend.get(a.id)!.change) ? 'pos' : 'neg'">{{ signedMoney(trend.get(a.id)!.change) }}</span>
+              <span class="small faint">since {{ new Date(trend.get(a.id)!.since + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) }}</span>
+            </div>
           </div>
           <div class="actions">
+            <button class="btn icon sm" aria-label="Record a new value" title="Record a new value" @click="recordValue(a)"><Icon name="trend" :size="16" /></button>
             <button class="btn icon sm" aria-label="Edit" @click="edit(a)"><Icon name="edit" :size="16" /></button>
             <button class="btn icon sm danger" aria-label="Delete" @click="remove(a)"><Icon name="trash" :size="16" /></button>
           </div>
@@ -134,7 +172,8 @@ const mix = computed(() => [
       </aside>
     </div>
 
-    <AccountForm :open="formOpen" :account="editing" :initial-category="newCat" @close="formOpen = false" />
+    <AccountForm :open="formOpen" :account="editing" :initial-category="newCat" @close="formOpen = false; loadHist()" />
+    <ValueDrawer :open="valueOpen" :account="valueFor" @close="valueOpen = false" @saved="loadHist" />
   </main>
 </template>
 
@@ -152,6 +191,8 @@ const mix = computed(() => [
 .main h3 { font-size: 16px; margin: 2px 0 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bal { font-size: 24px; font-weight: 700; letter-spacing: -0.03em; margin-bottom: 10px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.trend { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin-top: 12px; }
+.trend .small { white-space: nowrap; }
 .actions { display: flex; flex-direction: column; gap: 6px; opacity: 0.6; transition: opacity 0.2s; }
 .acct:hover .actions, .acct:focus-within .actions { opacity: 1; }
 .quick { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-top: 18px; }

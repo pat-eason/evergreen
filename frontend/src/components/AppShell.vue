@@ -11,6 +11,7 @@ const links = [
   { to: '/', label: 'Dashboard', icon: 'home' },
   { to: '/accounts', label: 'Accounts', icon: 'wallet' },
   { to: '/budget', label: 'Budget', icon: 'calendar' },
+  { to: '/history', label: 'History', icon: 'history' },
   { to: '/plan', label: 'Plan', icon: 'chart' },
   { to: '/withdrawal', label: 'Smart Withdrawal', icon: 'layers' },
   { to: '/freedom', label: 'Freedom', icon: 'spark' },

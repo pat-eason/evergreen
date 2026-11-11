@@ -7,14 +7,16 @@ import LineChart, { type Series } from '@/components/LineChart.vue'
 import ProgressRing from '@/components/ProgressRing.vue'
 import Sparkline from '@/components/Sparkline.vue'
 import { api } from '@/lib/api'
+import { dayNumber, fromDayNumber, signedMoney, signedPct } from '@/lib/format'
 import { compact, currentMonth, greeting, money, monthLabel, pct } from '@/lib/format'
 import { ensurePlan, errMsg, firstName, loadData, position, state, toast } from '@/lib/store'
-import type { Budget, BudgetMonth, FreedomResult } from '@/lib/types'
+import type { Budget, BudgetMonth, FreedomResult, History } from '@/lib/types'
 
 const loading = ref(true)
 const freedom = ref<FreedomResult | null>(null)
 const budget = ref<Budget | null>(null)
 const months = ref<BudgetMonth[]>([])
+const hist = ref<History | null>(null)
 
 onMounted(async () => {
   try {
@@ -23,6 +25,7 @@ onMounted(async () => {
     freedom.value = f
     months.value = ms
     try { budget.value = await api.budget(currentMonth()) } catch { budget.value = null }
+    try { hist.value = await api.history({ months: 12 }) } catch { hist.value = null }
   } catch (e) { toast(errMsg(e), 'err') } finally { loading.value = false }
 })
 
@@ -44,6 +47,13 @@ const series = computed<Series[]>(() => {
     { key: 'p10', label: '10th percentile', color: 'var(--c-accent)', area: true, fill: 0.5, points: y.map((r) => ({ x: r.age, y: r.portfolio_p10 })) },
   ]
 })
+
+const histSeries = computed<Series[]>(() => {
+  const p = hist.value?.points ?? []
+  return p.length < 2 ? [] : [{ key: 'nw', label: 'Net worth', color: 'var(--c-accent)', area: true, fill: 0.5, points: p.map((x) => ({ x: dayNumber(x.date), y: x.net_worth })) }]
+})
+const histSpan = computed(() => { const p = hist.value?.points ?? []; return p.length ? dayNumber(p[p.length - 1].date) - dayNumber(p[0].date) : 0 })
+const histFmt = (v: number) => fromDayNumber(v).toLocaleDateString('en-US', histSpan.value > 120 ? { month: 'short', year: 'numeric', timeZone: 'UTC' } : { month: 'short', day: 'numeric', timeZone: 'UTC' })
 
 const mix = computed(() => [
   { label: 'Tax-deferred', value: position.value.taxDeferred, color: 'var(--c-rose)' },
@@ -114,6 +124,19 @@ const showSteps = computed(() => steps.value.some((s) => !s.done))
         <div v-else class="skeleton" style="height: 300px" />
       </section>
     </div>
+
+    <section class="glass pad rise" style="margin-top: 18px; --i: 6">
+      <div class="card-head">
+        <div><h2>Net worth history</h2><span class="sub">from your account ledger</span></div>
+        <div class="row">
+          <span v-if="hist && histSeries.length" class="chip" :class="hist.summary.change >= 0 ? 'good' : 'bad'">{{ signedMoney(hist.summary.change) }}<template v-if="hist.summary.start_net_worth !== 0"> · {{ signedPct(hist.summary.change_pct) }}</template></span>
+          <RouterLink to="/history" class="small">Open history →</RouterLink>
+        </div>
+      </div>
+      <div v-if="loading" class="skeleton" style="height: 170px" />
+      <LineChart v-else-if="histSeries.length" :series="histSeries" :from-zero="false" :height="190" :x-format="histFmt" :x-ticks="[dayNumber(hist!.points[0].date), Math.round((dayNumber(hist!.points[0].date) + dayNumber(hist!.points[hist!.points.length - 1].date)) / 2), dayNumber(hist!.points[hist!.points.length - 1].date)]" />
+      <p v-else class="muted small">Your history builds as you update balances. Use <b>Record a value</b> on the Accounts page whenever you get a new statement.</p>
+    </section>
 
     <div class="grid cols-3" style="margin-top: 18px">
       <RouterLink to="/freedom" class="glass hover pad mile rise" style="--i: 6">

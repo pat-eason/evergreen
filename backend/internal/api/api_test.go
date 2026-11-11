@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/patrickeason/financial-wellness/backend/internal/store"
 )
@@ -338,5 +339,142 @@ func TestHouseholdAndOwnership(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &evs)
 	if len(evs) != 1 || evs[0]["owner"] != "self" {
 		t.Fatalf("event owner after delete: %v", evs)
+	}
+}
+
+func ledgerEntries(t *testing.T, c *client, query string) []map[string]any {
+	t.Helper()
+	w, out := c.do("GET", "/api/ledger"+query, nil)
+	if w.Code != 200 {
+		t.Fatalf("ledger: %d", w.Code)
+	}
+	var es []map[string]any
+	for _, e := range out["entries"].([]any) {
+		es = append(es, e.(map[string]any))
+	}
+	return es
+}
+
+func TestLedgerRecordsAccountChanges(t *testing.T) {
+	srv := newServer(t)
+	a, b := login(t, srv, "alice"), login(t, srv, "bob")
+
+	w, acc := a.do("POST", "/api/accounts", map[string]any{"name": "Brokerage", "category": "investment", "config": map[string]any{"balance": 10000, "tax_treatment": "taxable"}})
+	if w.Code != 201 {
+		t.Fatalf("create: %d", w.Code)
+	}
+	id := int(acc["id"].(float64))
+	path := "/api/accounts/" + itoa(id)
+
+	es := ledgerEntries(t, a, "")
+	if len(es) != 1 || es[0]["kind"] != "created" || es[0]["balance"].(float64) != 10000 {
+		t.Fatalf("after create: %v", es)
+	}
+
+	// a balance edit through the normal form is a value change
+	update := func(name string, bal float64) {
+		w, _ := a.do("PUT", path, map[string]any{"name": name, "category": "investment", "config": map[string]any{"balance": bal, "tax_treatment": "taxable"}})
+		if w.Code != 200 {
+			t.Fatalf("update: %d", w.Code)
+		}
+	}
+	update("Brokerage", 11500)
+	es = ledgerEntries(t, a, "")
+	if es[0]["kind"] != "updated" || es[0]["reason"] != "value" || es[0]["delta"].(float64) != 1500 || es[0]["previous"].(float64) != 10000 {
+		t.Fatalf("after balance edit: %v", es[0])
+	}
+	update("Main brokerage", 11500) // rename only
+	es = ledgerEntries(t, a, "")
+	if es[0]["kind"] != "edited" || es[0]["delta"].(float64) != 0 || len(es) != 3 {
+		t.Fatalf("after rename: %v", es)
+	}
+	update("Main brokerage", 11500) // no change at all
+	if got := len(ledgerEntries(t, a, "")); got != 3 {
+		t.Fatalf("a no-op save must not add an entry, have %d", got)
+	}
+
+	// dedicated value endpoint: deposit
+	w, out := a.do("POST", path+"/value", map[string]any{"balance": 13500, "reason": "deposit", "note": "bonus"})
+	if w.Code != 200 || out["applied"] != true {
+		t.Fatalf("deposit: %d %v", w.Code, out)
+	}
+	if w, _ := a.do("POST", path+"/value", map[string]any{"balance": 1, "reason": "payment"}); w.Code != 400 {
+		t.Fatalf("liability reason on an asset should be rejected: %d", w.Code)
+	}
+	if w, _ := a.do("POST", path+"/value", map[string]any{"balance": 1, "as_of": "2999-01-01"}); w.Code != 400 {
+		t.Fatalf("future date should be rejected: %d", w.Code)
+	}
+	if w, _ := a.do("POST", path+"/value", map[string]any{"balance": -5}); w.Code != 400 {
+		t.Fatalf("negative balance: %d", w.Code)
+	}
+
+	// a backfill dated before the latest entry adds history but leaves the live balance alone
+	past := time.Now().AddDate(0, 0, -30).Format("2006-01-02")
+	w, out = a.do("POST", path+"/value", map[string]any{"balance": 9000, "as_of": past})
+	if w.Code != 200 || out["applied"] != false {
+		t.Fatalf("backfill: %d %v", w.Code, out)
+	}
+	rec, _ := a.do("GET", "/api/accounts", nil)
+	var accts []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &accts)
+	if accts[0]["config"].(map[string]any)["balance"].(float64) != 13500 {
+		t.Fatalf("live balance must be unchanged by a backfill: %v", accts[0])
+	}
+
+	// history: growth vs contributions
+	w, h := a.do("GET", "/api/ledger/history?interval=day&by_account=1", nil)
+	if w.Code != 200 {
+		t.Fatalf("history: %d", w.Code)
+	}
+	pts := h["points"].([]any)
+	last := pts[len(pts)-1].(map[string]any)
+	// The backfilled 9,000 (30 days ago) is the opening balance, then a 2,000
+	// deposit: 11,000 put in. Balance 13,500 -> 2,500 of growth.
+	if last["net_contributions"].(float64) != 11000 || last["growth"].(float64) != 2500 || last["net_worth"].(float64) != 13500 {
+		t.Fatalf("history end point: %v", last)
+	}
+	if first := pts[0].(map[string]any); first["net_worth"].(float64) != 9000 {
+		t.Fatalf("history should start at the backfilled value: %v", first)
+	}
+	if _, ok := h["series"].(map[string]any)[itoa(id)]; !ok {
+		t.Fatalf("per-account series missing: %v", h["series"])
+	}
+
+	// isolation
+	if es := ledgerEntries(t, b, ""); len(es) != 0 {
+		t.Fatalf("bob sees alice's ledger: %v", es)
+	}
+	if w, _ := b.do("POST", path+"/value", map[string]any{"balance": 1}); w.Code != 404 {
+		t.Fatalf("cross-user value update: %d", w.Code)
+	}
+
+	// deleting keeps the history and records the removal
+	if w, _ := a.do("DELETE", path, nil); w.Code != 204 {
+		t.Fatalf("delete: %d", w.Code)
+	}
+	es = ledgerEntries(t, a, "?account_id="+itoa(id))
+	if es[0]["kind"] != "deleted" || es[0]["balance"].(float64) != 0 || es[0]["account_name"] != "Main brokerage" {
+		t.Fatalf("after delete: %v", es[0])
+	}
+	_, h = a.do("GET", "/api/ledger/history?interval=day", nil)
+	pts = h["points"].([]any)
+	if end := pts[len(pts)-1].(map[string]any); end["net_worth"].(float64) != 0 || end["growth"].(float64) != 2500 {
+		t.Fatalf("after delete the account stops counting but earned growth stays: %v", end)
+	}
+}
+
+func TestLedgerMortgageTracksHomeValue(t *testing.T) {
+	srv := newServer(t)
+	a := login(t, srv, "alice")
+	_, acc := a.do("POST", "/api/accounts", map[string]any{"name": "Home", "category": "mortgage", "config": map[string]any{"balance": 300000, "home_value": 450000, "interest_rate": 0.04}})
+	id := itoa(int(acc["id"].(float64)))
+	if w, _ := a.do("POST", "/api/accounts/"+id+"/value", map[string]any{"balance": 298000, "home_value": 460000, "reason": "payment"}); w.Code != 200 {
+		t.Fatalf("mortgage value: %d", w.Code)
+	}
+	_, h := a.do("GET", "/api/ledger/history?interval=day", nil)
+	pts := h["points"].([]any)
+	last := pts[len(pts)-1].(map[string]any)
+	if last["home"].(float64) != 460000 || last["mortgage"].(float64) != 298000 || last["net_worth"].(float64) != 162000 {
+		t.Fatalf("mortgage point: %v", last)
 	}
 }

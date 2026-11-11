@@ -47,3 +47,32 @@ export function nearestIndex(xs: number[], x: number): number {
   }
   return Math.abs(xs[lo] - x) <= Math.abs(xs[hi] - x) ? lo : hi
 }
+
+/** Like niceScale, but for data that may dip below zero. */
+export function niceRange(min: number, max: number, count = 5): { min: number; max: number; ticks: number[] } {
+  if (min >= 0) { const s = niceScale(max, count); return { min: 0, max: s.max, ticks: s.ticks } }
+  const span = Math.max(max, 0) - min
+  const rough = span / count
+  const mag = Math.pow(10, Math.floor(Math.log10(rough || 1)))
+  const norm = rough / mag
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag
+  const lo = Math.floor(min / step) * step
+  const hi = Math.max(Math.ceil(max / step) * step, step)
+  const ticks: number[] = []
+  for (let v = lo; v <= hi + step / 1000; v += step) ticks.push(Math.abs(v) < step / 1000 ? 0 : v)
+  return { min: lo, max: hi, ticks }
+}
+
+/** Nice axis bounds around [lo, hi] that do not have to include zero (for zoomed timelines). */
+export function niceBounds(lo: number, hi: number, count = 5): { min: number; max: number; ticks: number[] } {
+  if (hi <= lo) { hi = lo + Math.max(1, Math.abs(lo) * 0.1) }
+  const rough = (hi - lo) / count
+  const mag = Math.pow(10, Math.floor(Math.log10(rough)))
+  const norm = rough / mag
+  const step = (norm <= 1 ? 1 : norm <= 2 ? 2 : norm <= 2.5 ? 2.5 : norm <= 5 ? 5 : 10) * mag
+  const min = Math.floor(lo / step) * step
+  const max = Math.ceil(hi / step) * step
+  const ticks: number[] = []
+  for (let v = min; v <= max + step / 1000; v += step) ticks.push(Math.abs(v) < step / 1000 ? 0 : v)
+  return { min, max, ticks }
+}

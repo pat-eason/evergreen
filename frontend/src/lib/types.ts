@@ -190,3 +190,59 @@ export interface Calculation {
   result: any
   created_at: string
 }
+
+export type LedgerKind = 'created' | 'updated' | 'edited' | 'deleted'
+
+export interface LedgerEntry {
+  id: number
+  account_id: number
+  account_name: string
+  category: Category
+  owner: Owner
+  kind: LedgerKind
+  reason: string
+  balance: number // after the event
+  asset_value: number
+  note: string
+  occurred_at: string
+  previous: number
+  delta: number
+  first: boolean // the account's opening balance
+}
+
+export interface HistoryPoint {
+  date: string // YYYY-MM-DD
+  net_worth: number
+  assets: number
+  liabilities: number
+  cash: number
+  investments: number
+  home: number
+  mortgage: number
+  credit_cards: number
+  debts: number
+  net_contributions: number
+  growth: number
+}
+
+export interface HistorySummary {
+  from: string
+  to: string
+  start_net_worth: number
+  end_net_worth: number
+  change: number
+  change_pct: number
+  growth: number
+  contributions: number
+  liability_change: number
+}
+
+export interface History {
+  interval: 'day' | 'week' | 'month'
+  points: HistoryPoint[]
+  summary: HistorySummary
+  accounts?: { id: number; name: string; category: Category; owner: Owner; alive: boolean }[]
+  series?: Record<string, number[]>
+}
+
+export type ValueReason = 'value' | 'deposit' | 'withdrawal' | 'payment' | 'borrowing' | 'correction'
