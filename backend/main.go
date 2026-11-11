@@ -40,6 +40,7 @@ func main() {
 
 	srv := api.New(st, api.Config{
 		CookieSecure:       env("COOKIE_SECURE", "") == "true",
+		CookiePath:         env("COOKIE_PATH", "/"),
 		RegistrationClosed: strings.EqualFold(env("ALLOW_REGISTRATION", "true"), "false"),
 	})
 	srv.StartJanitor(ctx)

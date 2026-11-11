@@ -2,8 +2,15 @@
 #   SITE_ADDRESS unset or ":80"  -> plain HTTP (local use)
 #   SITE_ADDRESS=example.com     -> Caddy obtains and renews a Let's Encrypt
 #                                   certificate and redirects HTTP to HTTPS
+# On the shared droplet it runs as ":80" behind the shared proxy (see DEPLOY.md).
 {
 	admin off
+	servers {
+		# Trust X-Forwarded-For / -Proto from a proxy on a private (Docker) network, such as the
+		# shared droplet proxy, so the API sees the real client address. Public clients are never
+		# trusted: for them Caddy overwrites these headers.
+		trusted_proxies static private_ranges
+	}
 }
 
 {$SITE_ADDRESS::80} {

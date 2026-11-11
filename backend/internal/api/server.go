@@ -23,7 +23,7 @@ const (
 	// ipFailureLimit is how many failed sign-ins one address gets (across all
 	// emails) before it is slowed down; per-email limiting is stricter.
 	ipFailureLimit = 20
-	cookieName     = "fw_session"
+	cookieName     = "evergreen_session"
 	sessionTTL     = 30 * 24 * time.Hour
 )
 
@@ -32,6 +32,9 @@ type Config struct {
 	// CookieSecure forces the Secure flag. It is also set automatically for
 	// requests that arrive over TLS or through an HTTPS reverse proxy.
 	CookieSecure bool
+	// CookiePath scopes the session cookie (default "/"). Under a shared origin use the app's
+	// prefix, e.g. "/evergreen", so other apps on the host never receive it.
+	CookiePath string
 	// RegistrationClosed stops new sign-ups once the first account exists.
 	RegistrationClosed bool
 }
@@ -180,6 +183,13 @@ func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+func (s *Server) cookiePath() string {
+	if p := strings.TrimRight(s.cfg.CookiePath, "/"); p != "" {
+		return p
+	}
+	return "/"
+}
+
 // secure reports whether the client connection is HTTPS (directly, or via a
 // reverse proxy that says so), in which case cookies get the Secure flag.
 func (s *Server) secure(r *http.Request) bool {
@@ -188,13 +198,13 @@ func (s *Server) secure(r *http.Request) bool {
 
 func (s *Server) setCookie(w http.ResponseWriter, r *http.Request, token string, exp time.Time) {
 	http.SetCookie(w, &http.Cookie{
-		Name: cookieName, Value: token, Path: "/", Expires: exp,
+		Name: cookieName, Value: token, Path: s.cookiePath(), Expires: exp,
 		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.secure(r),
 	})
 }
 
 func (s *Server) clearCookie(w http.ResponseWriter, r *http.Request) {
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.secure(r)})
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: s.cookiePath(), MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.secure(r)})
 }
 
 // clientIP returns the caller's address. The API is only reachable through the

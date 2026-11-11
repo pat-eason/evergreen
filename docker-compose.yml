@@ -1,5 +1,6 @@
 # Local:       docker compose up --build        (http://localhost:8080)
-# Production:  see DEPLOY.md and .env.example
+# Production:  layered with docker-compose.prod.yml on the shared droplet (see DEPLOY.md):
+#                COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml
 services:
   db:
     image: postgres:17-alpine
@@ -41,14 +42,19 @@ services:
       retries: 5
 
   web:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        # public path of the SPA; the droplet image is built with /evergreen/ (see DEPLOY.md)
+        BASE_PATH: ${BASE_PATH:-/}
     image: ${REGISTRY:-ghcr.io/pat-eason}/evergreen-web:${TAG:-latest}
     restart: unless-stopped
     depends_on:
       api:
         condition: service_healthy
     environment:
-      # ":80" = plain HTTP; a domain name = automatic HTTPS
+      # ":80" = plain HTTP; a domain name = automatic HTTPS (standalone use only; on the
+      # shared droplet the prod overlay pins ":80" and the shared proxy does the HTTPS)
       SITE_ADDRESS: ${SITE_ADDRESS:-:80}
     ports:
       - "${HTTP_PORT:-8080}:80"

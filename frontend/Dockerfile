@@ -5,6 +5,9 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 COPY . .
+# Public path: "/" by default; the droplet build uses /evergreen/ (shared origin, see DEPLOY.md)
+ARG BASE_PATH=/
+ENV BASE_PATH=$BASE_PATH
 RUN pnpm build
 
 # Caddy serves the SPA, proxies /api to the Go service and handles HTTPS.

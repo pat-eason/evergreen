@@ -1,0 +1,30 @@
+# Production overlay for the shared droplet. Used together with docker-compose.yml:
+#   COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml docker compose up -d --no-build
+#
+# The app sits behind the shared reverse proxy (the droplet-infra repo): the web container joins the
+# external `proxy` network under a unique alias and publishes no host ports. The proxy terminates TLS.
+# The db and api stay on this app's private default network only; never add them to `proxy`.
+services:
+  db:
+    ports: !reset [] # no loopback publishing in production
+
+  api:
+    environment:
+      # The app only sees plain HTTP from the proxy, and the web container's Caddy rewrites
+      # X-Forwarded-Proto, so don't rely on header detection: always mark the session cookie Secure.
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      COOKIE_PATH: /evergreen # all apps share one origin: keep the cookie out of the others' requests
+
+  web:
+    ports: !reset []
+    environment:
+      SITE_ADDRESS: ":80" # plain HTTP; the shared Caddy gets the certificate and handles HTTPS
+    networks:
+      default: {}
+      proxy:
+        aliases:
+          - evergreen-web # unique per app; a shared `web` alias would round-robin between apps
+
+networks:
+  proxy:
+    external: true

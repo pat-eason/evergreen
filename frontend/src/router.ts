@@ -2,7 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { bootstrap, state } from '@/lib/store'
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     { path: '/login', name: 'login', component: () => import('@/views/Login.vue'), meta: { public: true } },
     { path: '/', name: 'dashboard', component: () => import('@/views/Dashboard.vue') },

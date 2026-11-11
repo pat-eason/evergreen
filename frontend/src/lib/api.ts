@@ -10,7 +10,7 @@ let onUnauthorized: () => void = () => {}
 export function setUnauthorizedHandler(fn: () => void) { onUnauthorized = fn }
 
 async function req<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const res = await fetch('/api' + path, {
+  const res = await fetch(import.meta.env.BASE_URL + 'api' + path, {
     method,
     credentials: 'same-origin',
     headers: body !== undefined ? { 'Content-Type': 'application/json' } : undefined,

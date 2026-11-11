@@ -45,7 +45,7 @@
 | Frontend  | Vue 3 + TypeScript (Vite), hand-written SVG charts, no UI framework |
 | API       | Go (`net/http`), cookie sessions, bcrypt                            |
 | Database  | PostgreSQL 17 (`pgx`), versioned migrations, data in a Docker volume |
-| Packaging | Docker Compose (Caddy serves the SPA, proxies `/api` and handles HTTPS) |
+| Packaging | Docker Compose (Caddy serves the SPA and proxies `/api`; on the droplet the shared proxy handles HTTPS) |
 
 ## Run it with Docker
 
@@ -66,7 +66,7 @@ Back up and restore the database (works while the app is running):
 
 ## Deploy it
 
-A step-by-step guide for a DigitalOcean droplet is in **[DEPLOY.md](DEPLOY.md)**: automatic HTTPS, locked-down sign-ups, nightly backups with a tested restore, and **deploys from GitHub Actions**. Every push to `main` is tested against a real Postgres, built into images on GitHub's runners, and rolled out to the droplet after a database backup.
+Evergreen deploys to a shared DigitalOcean droplet behind a shared Caddy proxy, at `https://apps.pateason.dev/evergreen/`. **[DEPLOY.md](DEPLOY.md)** covers the setup, the proxy contract, locked-down sign-ups, `pg_dump` backups and restore, and rollback. Every push to `main` is tested against a real Postgres, built into images on GitHub's runners, and rolled out over SSH after a database backup; the app's route is then registered with the proxy.
 
 ## Develop locally
 

@@ -1,0 +1,4 @@
+redir /evergreen /evergreen/
+handle_path /evergreen/* {
+	reverse_proxy evergreen-web:80
+}

@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Evergreen: a local-first budgeting + retirement-planning app. Vue 3/TypeScript SPA (`frontend/`), Go JSON API with PostgreSQL (`backend/`), packaged with Docker Compose. See `README.md` for the feature list and the simulation methodology.
+Evergreen: a local-first budgeting + retirement-planning app. Vue 3/TypeScript SPA (`frontend/`), Go JSON API with PostgreSQL (`backend/`), packaged with Docker Compose (served under `/evergreen/` on a shared droplet). See `README.md` for the feature list and the simulation methodology.
 
 ## Commands
 
@@ -26,7 +26,7 @@ pnpm dev                                # Vite on :5173, proxies /api to localho
 pnpm build                              # vue-tsc --noEmit && vite build  <- run this, not just `pnpm typecheck`
 ```
 
-There is no linter or frontend test suite. Deployment to a droplet is documented in `DEPLOY.md`; `.github/workflows/deploy.yml` tests on every PR and, on `main`, builds/pushes the images to GHCR and runs `deploy/deploy.sh` on the droplet over SSH (which backs up the database first). `deploy/backup.sh` / `deploy/restore.sh` wrap `pg_dump` / `pg_restore`; to test compose changes without touching real data use a throwaway project (`COMPOSE_PROJECT_NAME=fwtest HTTP_PORT=18080 HTTPS_PORT=18443 POSTGRES_PORT=15432 docker compose up -d --build`, then `down -v` of *that* project only). `.claude/launch.json` defines `api` (`go -C backend run .`) and `web` preview servers.
+There is no linter or frontend test suite. Deployment to the shared droplet is documented in `DEPLOY.md`: `docker-compose.prod.yml` layers on the base file (web joins the external `proxy` network as `evergreen-web`, no host ports, `SITE_ADDRESS=:80`, `COOKIE_SECURE=true`, `COOKIE_PATH=/evergreen`), and `.github/workflows/deploy.yml` tests every PR and, on `main`, pushes images to GHCR (web built with `BASE_PATH=/evergreen/`), deploys over SSH and runs `proxy-site install evergreen` with `deploy/evergreen.caddy`. `deploy/backup.sh` / `deploy/restore.sh` wrap `pg_dump` / `pg_restore`. **The app must keep working under a path prefix**: use `import.meta.env.BASE_URL` for any URL (router, fetch, assets), prefix new localStorage keys with `evergreen.`, and never emit absolute `/...` redirects from the API. To test compose changes without touching real data use a throwaway project (`COMPOSE_PROJECT_NAME=fwtest HTTP_PORT=18080 HTTPS_PORT=18443 POSTGRES_PORT=15432 docker compose up -d --build`, then `down -v` of *that* project only). `.claude/launch.json` defines `api` (`go -C backend run .`) and `web` preview servers.
 
 ## Gotchas
 

@@ -1,23 +1,26 @@
-name: CI/CD
+name: CI & Deploy
 
 # Pull requests: run the tests and build.
-# Pushes to main: also build and publish the images, then deploy to the droplet.
-# Run it by hand (Actions tab -> Run workflow) to redeploy main.
+# Pushes to main: also build and publish the images, deploy them to the shared droplet, and publish the
+# /evergreen route to the shared proxy (droplet-infra), served at https://apps.pateason.dev/evergreen/. Run it by hand (Actions -> Run workflow) to redeploy, or re-run an older
+# run to roll back.
 on:
-  pull_request:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
+
+# Never run two deploys at once, and never cancel one midway.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-
 jobs:
   test:
+    name: Test & build
     runs-on: ubuntu-latest
     timeout-minutes: 15
     services:
@@ -41,31 +44,31 @@ jobs:
         with:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
-
-      - name: Backend vet and tests
+      - name: API format, vet & tests
         working-directory: backend
         run: |
+          test -z "$(gofmt -l .)" || { gofmt -l .; echo "gofmt needed"; exit 1; }
           go vet ./...
+          go build ./...
           go test -race -count=1 ./...
 
       - name: Enable pnpm (version pinned by frontend/package.json)
         run: corepack enable
-
       - uses: actions/setup-node@v4
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
-
-      - name: Frontend typecheck and build
+      - name: Web typecheck & build
         working-directory: frontend
         run: |
           pnpm install --frozen-lockfile
           pnpm build
 
   images:
+    name: Build & push images
     needs: test
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -76,98 +79,141 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Image registry name (must be lowercase)
+      - name: Registry name (must be lowercase)
         id: names
         run: echo "registry=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
       - uses: docker/setup-buildx-action@v3
-
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and push api
+      - name: Build & push API
         uses: docker/build-push-action@v6
         with:
           context: backend
           push: true
-          tags: |
-            ${{ steps.names.outputs.registry }}/evergreen-api:${{ github.sha }}
-            ${{ steps.names.outputs.registry }}/evergreen-api:latest
+          tags: ${{ steps.names.outputs.registry }}/evergreen-api:${{ github.sha }}
           # links the package to this repository so the deploy job's token may pull it
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha,scope=api
           cache-to: type=gha,scope=api,mode=max
 
-      - name: Build and push web
+      - name: Build & push web
         uses: docker/build-push-action@v6
         with:
           context: frontend
           push: true
-          tags: |
-            ${{ steps.names.outputs.registry }}/evergreen-web:${{ github.sha }}
-            ${{ steps.names.outputs.registry }}/evergreen-web:latest
+          tags: ${{ steps.names.outputs.registry }}/evergreen-web:${{ github.sha }}
+          # served at https://apps.pateason.dev/evergreen/ behind the shared proxy
+          build-args: BASE_PATH=/evergreen/
           labels: org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           cache-from: type=gha,scope=web
           cache-to: type=gha,scope=web,mode=max
 
   deploy:
+    name: Deploy to droplet
     needs: images
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # Create a "production" environment in the repo settings to add required reviewers
-    # (a manual approval before each deploy) or to scope the secrets below to it.
+    # Add required reviewers to the "production" environment in GitHub if you want a manual gate.
     environment: production
     permissions:
       contents: read
-      packages: read
-    concurrency:
-      group: production-deploy
-      cancel-in-progress: false
     env:
-      DEPLOY_PATH: ${{ vars.DEPLOY_PATH || '/opt/evergreen' }}
+      DEPLOY_DIR: /opt/evergreen
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up SSH
+      - name: Configure SSH
         env:
           SSH_KEY: ${{ secrets.DROPLET_SSH_KEY }}
-          KNOWN_HOSTS: ${{ secrets.DROPLET_SSH_KNOWN_HOSTS }}
+          KNOWN_HOSTS: ${{ secrets.DROPLET_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DROPLET_HOST }}
+          SSH_USER: ${{ secrets.DROPLET_USER }}
+          PORT: ${{ secrets.DROPLET_SSH_PORT }}
         run: |
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          # Host key is pinned from a secret rather than trusted on first use.
           printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<CONF
+          Host droplet
+            HostName $HOST
+            User $SSH_USER
+            Port ${PORT:-22}
+            IdentityFile ~/.ssh/deploy_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          CONF
 
-      - name: Copy compose file and scripts
-        env:
-          TARGET: ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}
+      - name: Sync compose files and scripts
         run: |
-          SSH="ssh -i $HOME/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
-          scp -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            docker-compose.yml deploy/deploy.sh deploy/backup.sh deploy/restore.sh \
-            "$TARGET:$DEPLOY_PATH/"
-          $SSH "$TARGET" "chmod +x '$DEPLOY_PATH'/deploy.sh '$DEPLOY_PATH'/backup.sh '$DEPLOY_PATH'/restore.sh"
+          scp docker-compose.yml docker-compose.prod.yml deploy/backup.sh deploy/restore.sh "droplet:${DEPLOY_DIR}/"
+          ssh droplet "chmod +x '${DEPLOY_DIR}/backup.sh' '${DEPLOY_DIR}/restore.sh'"
 
-      - name: Deploy
+      - name: Log the droplet in to GHCR
         env:
-          TARGET: ${{ secrets.DROPLET_USER }}@${{ secrets.DROPLET_HOST }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REGISTRY: ${{ needs.images.outputs.registry }}
-          SHA: ${{ github.sha }}
           ACTOR: ${{ github.actor }}
-        run: |
-          # The registry token goes over stdin so it never appears in a process list or log.
-          printf '%s' "$GHCR_TOKEN" | ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
-            "$TARGET" "cd '$DEPLOY_PATH' && ./deploy.sh '$SHA' '$REGISTRY' '$ACTOR'"
+        run: printf '%s' "$GHCR_TOKEN" | ssh droplet "docker login ghcr.io -u '$ACTOR' --password-stdin"
 
-      - name: Health check
-        if: ${{ vars.DEPLOY_URL != '' }}
+      - name: Pull images and restart
         env:
-          DEPLOY_URL: ${{ vars.DEPLOY_URL }}
+          REGISTRY: ${{ needs.images.outputs.registry }}
+          TAG: ${{ github.sha }}
         run: |
-          curl --fail --silent --show-error --retry 10 --retry-delay 3 --retry-all-errors \
-            "$DEPLOY_URL/api/health"
+          ssh droplet "REGISTRY='$REGISTRY' TAG='$TAG' bash -s" <<'REMOTE'
+          set -euo pipefail
+          cd /opt/evergreen
+          # First deploy only: create .env with a random database password. Never overwritten afterwards,
+          # because Postgres reads its password when the volume is first created.
+          if [ ! -f .env ]; then
+            umask 077
+            {
+              printf 'POSTGRES_PASSWORD=%s\n' "$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)"
+              # sign-ups lock once the first account exists (the first account can always be created)
+              echo 'ALLOW_REGISTRATION=false'
+              # pin the project (so the data volume is always evergreen_pgdata) and the layered files,
+              # so manual `docker compose ...`, backup.sh and restore.sh behave like the deploy
+              echo 'COMPOSE_PROJECT_NAME=evergreen'
+              echo 'COMPOSE_FILE=docker-compose.yml:docker-compose.prod.yml'
+            } > .env
+          fi
+          set_env() { # update or append KEY=VALUE without touching the other lines
+            if grep -q "^$1=" .env; then sed -i "s|^$1=.*|$1=$2|" .env; else printf '%s=%s\n' "$1" "$2" >> .env; fi
+          }
+          # Back up before changing anything. If the database is up and the backup fails, stop.
+          if docker compose ps --status running --services 2>/dev/null | grep -qx db; then
+            ./backup.sh
+          fi
+          # Remember what is running so manual compose commands use the same images.
+          set_env REGISTRY "$REGISTRY"
+          set_env TAG "$TAG"
+          docker compose pull api web
+          docker compose up -d --no-build --remove-orphans
+          echo "waiting for the API to report healthy..."
+          for i in $(seq 1 30); do
+            if docker compose exec -T api wget -qO- http://127.0.0.1:8081/api/health >/dev/null 2>&1; then
+              echo "healthy"
+              docker image prune -f >/dev/null
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "API did not become healthy" >&2
+          docker compose ps
+          docker compose logs --tail 50 api
+          exit 1
+          REMOTE
+
+      - name: Remove stored registry credentials
+        if: always()
+        run: ssh droplet "docker logout ghcr.io" || true
+
+      # Last step: publish this app's route to the shared proxy. proxy-site validates the whole Caddy
+      # config and rolls back if the snippet is invalid, so a mistake can't take the other apps down.
+      - name: Publish route to the shared proxy
+        run: ssh droplet "proxy-site install evergreen" < deploy/evergreen.caddy

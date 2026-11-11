@@ -29,7 +29,7 @@ export function errMsg(e: unknown): string {
   return e instanceof ApiError ? e.message : e instanceof Error ? e.message : 'Something went wrong'
 }
 
-const NAV_KEY = 'fw.navCollapsed'
+const NAV_KEY = 'evergreen.navCollapsed'
 function readCollapsed(): boolean {
   try { return localStorage.getItem(NAV_KEY) === '1' } catch { return false }
 }
