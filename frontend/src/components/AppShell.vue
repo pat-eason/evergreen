@@ -44,12 +44,12 @@ onBeforeUnmount(() => { document.removeEventListener('mousedown', onDoc); docume
       </RouterLink>
       <nav class="nav" aria-label="Main">
         <RouterLink v-for="l in links" :key="l.to" :to="l.to" :aria-label="l.label">
-          <Icon :name="l.icon" :size="18" /><span class="label">{{ l.label }}</span>
+          <Icon :name="l.icon" :size="18" /><span class="nl">{{ l.label }}</span>
           <span class="tip" aria-hidden="true">{{ l.label }}</span>
         </RouterLink>
       </nav>
       <button class="collapse" type="button" :aria-expanded="!ui.navCollapsed" :aria-label="ui.navCollapsed ? 'Expand navigation' : 'Collapse navigation'" @click="toggleNav">
-        <Icon name="left" :size="18" class="cico" :class="{ flip: ui.navCollapsed }" /><span class="label">Collapse</span>
+        <Icon name="left" :size="18" class="cico" :class="{ flip: ui.navCollapsed }" /><span class="nl">Collapse</span>
         <span class="tip" aria-hidden="true">Expand</span>
       </button>
       <div ref="menuEl" class="user">
@@ -109,7 +109,7 @@ onBeforeUnmount(() => { document.removeEventListener('mousedown', onDoc); docume
 .tip { display: none; }
 
 /* tablets (portrait) and phones: icon-only nav */
-@media (max-width: 1023px) { .nav a .label { display: none; } .nav a { padding: 0 13px; } .uname { display: none; } .who { padding: 0 8px 0 4px; } }
+@media (max-width: 1023px) { .nav a .nl { display: none; } .nav a { padding: 0 13px; } .uname { display: none; } .who { padding: 0 8px 0 4px; } }
 @media (max-width: 680px) { .top { padding: 10px 12px 0; } .brand span { display: none; } .bar { gap: 8px; } }
 
 /* ---- tablet landscape and up: fixed left sidebar ---- */
@@ -120,7 +120,7 @@ onBeforeUnmount(() => { document.removeEventListener('mousedown', onDoc); docume
   .nav { flex-direction: column; gap: 4px; margin: 0; overflow: visible; }
   .nav a { height: 46px; padding: 0 14px; gap: 14px; font-size: 14.5px; }
   .nav a, .collapse, .who { position: relative; }
-  .nav a .label, .collapse .label { display: inline; }
+  .nav a .nl, .collapse .nl { display: inline; }
   .collapse { display: flex; align-items: center; gap: 14px; height: 44px; margin-top: auto; padding: 0 14px; border: 0; border-radius: 999px; background: transparent; color: var(--faint); font: inherit; font-weight: 600; font-size: 14px; cursor: pointer; transition: color 0.2s, background 0.2s; }
   .collapse:hover { color: var(--text); background: rgba(255, 255, 255, 0.07); }
   .collapse:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
@@ -133,12 +133,12 @@ onBeforeUnmount(() => { document.removeEventListener('mousedown', onDoc); docume
   .pop-enter-from, .pop-leave-to { transform: translateY(6px) scale(0.98); }
   .top { transition: width 0.35s var(--ease); }
   .bar { overflow: visible; }
-  .nav a .label, .collapse .label, .uname { white-space: nowrap; }
+  .nav a .nl, .collapse .nl, .uname { white-space: nowrap; }
 
   /* ---- collapsed: icon rail with hover/focus popovers ---- */
   .top.collapsed { width: 92px; }
   .collapsed .brand { justify-content: center; padding: 0 0 18px; }
-  .top.collapsed .brand span, .top.collapsed .nav a .label, .top.collapsed .collapse .label, .top.collapsed .uname, .top.collapsed .chev { display: none; }
+  .top.collapsed .brand span, .top.collapsed .nav a .nl, .top.collapsed .collapse .nl, .top.collapsed .uname, .top.collapsed .chev { display: none; }
   .top.collapsed .nav a, .top.collapsed .collapse { justify-content: center; padding: 0; gap: 0; }
   .collapsed .who { justify-content: center; padding: 0; }
   .collapsed .menu { left: calc(100% + 12px); right: auto; bottom: 0; min-width: 240px; transform-origin: left bottom; }

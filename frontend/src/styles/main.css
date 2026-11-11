@@ -47,6 +47,8 @@ body {
     linear-gradient(160deg, #250104 0%, #120805 46%, #071a06 100%);
   background-attachment: fixed;
   -webkit-font-smoothing: antialiased;
+  /* Tabular figures everywhere: currency, ages and percentages align and don't jitter while counting up. */
+  font-variant-numeric: tabular-nums;
   font-size: 15px;
   line-height: 1.5;
 }

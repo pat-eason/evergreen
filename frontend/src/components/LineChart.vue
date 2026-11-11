@@ -68,7 +68,11 @@ const xTickList = computed(() => {
   const step = span <= 12 ? 1 : span <= 30 ? 5 : span <= 60 ? 10 : 20
   const out: number[] = []
   for (let v = Math.ceil(min / step) * step; v <= max; v += step) out.push(v)
-  if (!out.includes(min)) out.unshift(min)
+  if (!out.includes(min)) {
+    out.unshift(min)
+    // drop the next tick if it would collide with the first label (e.g. ages 38 and 40)
+    if (out.length > 1 && out[1] - out[0] < step * 0.6) out.splice(1, 1)
+  }
   return out
 })
 
