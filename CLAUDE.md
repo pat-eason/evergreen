@@ -7,12 +7,13 @@ Evergreen: a local-first budgeting + retirement-planning app. Vue 3/TypeScript S
 ## Commands
 
 ```bash
-# Full stack (http://localhost:8080; nginx serves the SPA and proxies /api -> api:8081)
+# Full stack (http://localhost:8080; Caddy serves the SPA, proxies /api -> api:8081 and does HTTPS)
 docker compose up -d --build            # rebuild after code changes (use `--build web` / `api` for one side)
 docker compose down -v                  # DELETES the SQLite volume (all users/data) — omit -v to keep data
 
 # Backend (Go 1.26, cwd backend/)
-go run .                                # API on :8081, DB at ./data/wellness.db (env: ADDR, DB_PATH, COOKIE_SECURE)
+go run .                                # API on :8081, DB at ./data/wellness.db (env: ADDR, DB_PATH, COOKIE_SECURE, ALLOW_REGISTRATION, BACKUP_KEEP)
+go run . backup [dir]                   # consistent DB snapshot (VACUUM INTO); in Docker: docker compose exec -T api api backup
 go vet ./... && go test ./...
 go test ./internal/sim -run TestFreedom -v      # single test
 go test ./internal/api -run TestHouseholdAndOwnership -v
@@ -22,7 +23,7 @@ pnpm dev                                # Vite on :5173, proxies /api to localho
 pnpm build                              # vue-tsc --noEmit && vite build  <- run this, not just `pnpm typecheck`
 ```
 
-There is no linter or frontend test suite. `.claude/launch.json` defines `api` (`go -C backend run .`) and `web` preview servers.
+There is no linter or frontend test suite. Deployment to a droplet is documented in `DEPLOY.md`; to test compose changes without touching real data use a throwaway project (`COMPOSE_PROJECT_NAME=fwtest HTTP_PORT=18080 HTTPS_PORT=18443 docker compose up -d --build`, then `down -v` of *that* project only). `.claude/launch.json` defines `api` (`go -C backend run .`) and `web` preview servers.
 
 ## Gotchas
 
@@ -36,6 +37,7 @@ There is no linter or frontend test suite. `.claude/launch.json` defines `api` (
 - `main.go` wires `store` -> `api.Server`. `internal/store` is the only SQL; `internal/api` is handlers + auth; `internal/sim` is pure planning math with no I/O.
 - **Schema/migrations live in `store.Open`**: `CREATE TABLE IF NOT EXISTS` plus in-place fixes (`pragma_table_info` checks for the old `username` column rename and `ALTER TABLE ADD COLUMN` for `owner`). Add new columns there; there is no migration tool.
 - **Every query is scoped by `user_id`** (cross-user access returns 404). Owner references (account/event `owner`) are validated against the caller's household in `resolveOwner`.
+- Deployment behaviour: the API is only reachable through Caddy, which sets `X-Forwarded-For`/`-Proto`; `clientIP` and `secure()` rely on that (cookies get `Secure` automatically over HTTPS). `ALLOW_REGISTRATION=false` closes sign-ups once any user exists (`registrationOpen`; the first account is always allowed). The Caddyfile's CSP only allows same-origin assets, so Vite is configured with `assetsInlineLimit: 0` (inlined `data:` fonts are blocked).
 - Auth: opaque random session token in an HttpOnly cookie (only its SHA-256 is stored); bcrypt passwords; in-memory failed-login throttle (also used for password re-verification). `ServeHTTP` rejects non-JSON bodies as a CSRF guard. Email is lower-cased via `normalizeEmail`.
 - Account `config` is a single union struct (`sim.AccountConfig`) stored as JSON; `sanitizeAccount` validates and strips fields that don't belong to the account's category.
 - Budget amounts may be formulas (`=(1368.23*2)+500`). The evaluator exists twice and must stay in sync: `internal/api/expr.go` (authoritative, runs on save) and `frontend/src/lib/expr.ts` (live display).

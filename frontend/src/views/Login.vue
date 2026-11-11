@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import PasswordField from '@/components/PasswordField.vue'
 import { api } from '@/lib/api'
@@ -11,8 +11,15 @@ const mode = ref<'login' | 'register'>('login')
 const email = ref('')
 const password = ref('')
 const confirm = ref('')
+const registrationOpen = ref(true)
 const busy = ref(false)
 const error = ref('')
+
+// A server can close sign-ups once its owner has registered; hide the tab then.
+onMounted(async () => {
+  try { registrationOpen.value = (await api.config()).registration_open } catch { /* assume open */ }
+  if (!registrationOpen.value) mode.value = 'login'
+})
 
 async function submit() {
   error.value = ''
@@ -47,10 +54,11 @@ async function submit() {
     </section>
 
     <section class="card glass rise" style="--i: 2">
-      <div class="tabs" role="tablist">
+      <div v-if="registrationOpen" class="tabs" role="tablist">
         <button class="tab" :class="{ on: mode === 'login' }" role="tab" @click="mode = 'login'; error = ''">Sign in</button>
         <button class="tab" :class="{ on: mode === 'register' }" role="tab" @click="mode = 'register'; error = ''">Create account</button>
       </div>
+      <h2 v-else class="signin-title">Sign in</h2>
       <form class="stack" @submit.prevent="submit">
         <label class="field"><span>Email</span><input v-model.trim="email" class="input" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" required maxlength="254" autofocus /></label>
         <PasswordField v-model="password" label="Password" :autocomplete="mode === 'login' ? 'current-password' : 'new-password'" :minlength="8" :maxlength="72" />
@@ -75,5 +83,6 @@ ul { list-style: none; padding: 0; margin: 0; display: flex; flex-wrap: wrap; ga
 li { display: inline-flex; align-items: center; gap: 9px; padding: 8px 16px; border-radius: 999px; background: rgba(255, 255, 255, 0.07); border: 1px solid var(--glass-border); font-weight: 600; font-size: 13.5px; }
 .card { padding: 28px; display: grid; gap: 22px; background: linear-gradient(145deg, rgba(255, 255, 255, 0.13), rgba(255, 255, 255, 0.05)); }
 .card .tabs { justify-self: start; }
+.signin-title { font-size: 22px; }
 @media (max-width: 900px) { .wrap { grid-template-columns: 1fr; gap: 30px; padding: 28px 16px; } }
 </style>

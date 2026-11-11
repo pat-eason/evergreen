@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/mail"
 	"strconv"
@@ -19,13 +20,20 @@ import (
 )
 
 const (
-	cookieName = "fw_session"
-	sessionTTL = 30 * 24 * time.Hour
+	// ipFailureLimit is how many failed sign-ins one address gets (across all
+	// emails) before it is slowed down; per-email limiting is stricter.
+	ipFailureLimit = 20
+	cookieName     = "fw_session"
+	sessionTTL     = 30 * 24 * time.Hour
 )
 
 // Config holds server settings.
 type Config struct {
+	// CookieSecure forces the Secure flag. It is also set automatically for
+	// requests that arrive over TLS or through an HTTPS reverse proxy.
 	CookieSecure bool
+	// RegistrationClosed stops new sign-ups once the first account exists.
+	RegistrationClosed bool
 }
 
 // Server is the API handler.
@@ -67,6 +75,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) routes() {
 	m := s.mux
+	m.HandleFunc("GET /api/config", s.publicConfig)
 	m.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, 200, map[string]string{"status": "ok"}) })
 
 	m.HandleFunc("POST /api/auth/register", s.register)
@@ -163,7 +172,7 @@ func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 		}
 		u, err := s.st.UserBySession(r.Context(), c.Value)
 		if err != nil {
-			s.clearCookie(w)
+			s.clearCookie(w, r)
 			writeErr(w, http.StatusUnauthorized, "not authenticated")
 			return
 		}
@@ -171,15 +180,58 @@ func (s *Server) auth(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func (s *Server) setCookie(w http.ResponseWriter, token string, exp time.Time) {
+// secure reports whether the client connection is HTTPS (directly, or via a
+// reverse proxy that says so), in which case cookies get the Secure flag.
+func (s *Server) secure(r *http.Request) bool {
+	return s.cfg.CookieSecure || r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
+}
+
+func (s *Server) setCookie(w http.ResponseWriter, r *http.Request, token string, exp time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name: cookieName, Value: token, Path: "/", Expires: exp,
-		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.cfg.CookieSecure,
+		HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.secure(r),
 	})
 }
 
-func (s *Server) clearCookie(w http.ResponseWriter) {
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.cfg.CookieSecure})
+func (s *Server) clearCookie(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: "", Path: "/", MaxAge: -1, HttpOnly: true, SameSite: http.SameSiteLaxMode, Secure: s.secure(r)})
+}
+
+// clientIP returns the caller's address. The API is only reachable through the
+// reverse proxy, which overwrites X-Forwarded-For with the real client address.
+func clientIP(r *http.Request) string {
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		if i := strings.IndexByte(xff, ','); i >= 0 {
+			xff = xff[:i]
+		}
+		if ip := strings.TrimSpace(xff); ip != "" {
+			return ip
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+// registrationOpen reports whether new accounts can be created: always when
+// open, otherwise only while no account exists yet (to bootstrap the install).
+func (s *Server) registrationOpen(r *http.Request) (bool, error) {
+	if !s.cfg.RegistrationClosed {
+		return true, nil
+	}
+	n, err := s.st.CountUsers(r.Context())
+	return n == 0, err
+}
+
+func (s *Server) publicConfig(w http.ResponseWriter, r *http.Request) {
+	open, err := s.registrationOpen(r)
+	if err != nil {
+		serverErr(w, err)
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"registration_open": open})
 }
 
 // ---------- auth ----------
@@ -209,6 +261,15 @@ func normalizeEmail(s string) (string, bool) {
 }
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
+	open, err := s.registrationOpen(r)
+	if err != nil {
+		serverErr(w, err)
+		return
+	}
+	if !open {
+		writeErr(w, http.StatusForbidden, "registration is closed on this server")
+		return
+	}
 	var c credentials
 	if !readJSON(w, r, &c) {
 		return
@@ -249,7 +310,7 @@ func (s *Server) startSession(w http.ResponseWriter, r *http.Request, u store.Us
 		serverErr(w, err)
 		return
 	}
-	s.setCookie(w, token, exp)
+	s.setCookie(w, r, token, exp)
 	writeJSON(w, 200, u)
 }
 
@@ -265,7 +326,11 @@ func (s *Server) throttled(key string) (time.Duration, bool) {
 	return 0, false
 }
 
-func (s *Server) recordFailure(key string) {
+func (s *Server) recordFailure(key string) { s.recordFailureAfter(key, 5) }
+
+// recordFailureAfter counts a failure and starts backing off once `limit`
+// failures have accumulated for the key.
+func (s *Server) recordFailureAfter(key string, limit int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f := s.failures[key]
@@ -274,8 +339,8 @@ func (s *Server) recordFailure(key string) {
 		s.failures[key] = f
 	}
 	f.count++
-	if f.count >= 5 {
-		d := time.Duration(f.count-4) * 15 * time.Second
+	if f.count >= limit {
+		d := time.Duration(f.count-limit+1) * 15 * time.Second
 		if d > 5*time.Minute {
 			d = 5 * time.Minute
 		}
@@ -292,6 +357,12 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	key := strings.ToLower(strings.TrimSpace(c.Email))
+	ipKey := "ip:" + clientIP(r)
+	if wait, ok := s.throttled(ipKey); ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeErr(w, http.StatusTooManyRequests, "too many failed attempts, try again shortly")
+		return
+	}
 	if wait, ok := s.throttled(key); ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		writeErr(w, http.StatusTooManyRequests, "too many failed attempts, try again shortly")
@@ -301,11 +372,13 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		_ = bcrypt.CompareHashAndPassword(dummyHash, []byte(c.Password))
 		s.recordFailure(key)
+		s.recordFailureAfter(ipKey, ipFailureLimit)
 		writeErr(w, 401, "invalid email or password")
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(hash), []byte(c.Password)) != nil {
 		s.recordFailure(key)
+		s.recordFailureAfter(ipKey, ipFailureLimit)
 		writeErr(w, 401, "invalid email or password")
 		return
 	}
@@ -319,7 +392,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	if c, err := r.Cookie(cookieName); err == nil {
 		_ = s.st.DeleteSession(r.Context(), c.Value)
 	}
-	s.clearCookie(w)
+	s.clearCookie(w, r)
 	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 

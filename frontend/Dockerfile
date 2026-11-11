@@ -7,7 +7,9 @@ RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm build
 
-FROM nginx:1.29-alpine
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /app/dist /usr/share/nginx/html
-EXPOSE 80
+# Caddy serves the SPA, proxies /api to the Go service and handles HTTPS.
+FROM caddy:2-alpine
+COPY Caddyfile /etc/caddy/Caddyfile
+COPY --from=build /app/dist /srv
+RUN caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+EXPOSE 80 443

@@ -1,11 +1,14 @@
+# Local:       docker compose up --build        (http://localhost:8080)
+# Production:  see DEPLOY.md and .env.example
 services:
   api:
     build: ./backend
     restart: unless-stopped
     environment:
       DB_PATH: /data/wellness.db
-      # Set to "true" if you serve the app over HTTPS
-      COOKIE_SECURE: "false"
+      # "false" locks sign-ups once the first account exists
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      BACKUP_KEEP: ${BACKUP_KEEP:-14}
     volumes:
       - wellness-data:/data
     healthcheck:
@@ -20,8 +23,18 @@ services:
     depends_on:
       api:
         condition: service_healthy
+    environment:
+      # ":80" = plain HTTP; a domain name = automatic HTTPS
+      SITE_ADDRESS: ${SITE_ADDRESS:-:80}
     ports:
-      - "8080:80"
+      - "${HTTP_PORT:-8080}:80"
+      - "${HTTPS_PORT:-8443}:443"
+      - "${HTTPS_PORT:-8443}:443/udp"
+    volumes:
+      - caddy-data:/data    # certificates: keep this or Let's Encrypt rate limits bite
+      - caddy-config:/config
 
 volumes:
   wellness-data:
+  caddy-data:
+  caddy-config:

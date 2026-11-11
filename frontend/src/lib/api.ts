@@ -32,6 +32,7 @@ function qs(o: Record<string, string | number | undefined>): string {
 }
 
 export const api = {
+  config: () => req<{ registration_open: boolean }>('GET', '/config'),
   register: (email: string, password: string) => req<User>('POST', '/auth/register', { email, password }),
   login: (email: string, password: string) => req<User>('POST', '/auth/login', { email, password }),
   logout: () => req<{ ok: boolean }>('POST', '/auth/logout', {}),

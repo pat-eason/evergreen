@@ -40,3 +40,42 @@ func TestLedgerBackfillIsIdempotent(t *testing.T) {
 		st.Close()
 	}
 }
+
+func TestBackupIsAConsistentSnapshot(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := Open(filepath.Join(dir, "live.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	u, _ := st.CreateUser(ctx, "a@example.com", "hash")
+	if _, err := st.CreateAccount(ctx, u.ID, sim.Account{Name: "Cash", Category: "cash", Owner: "self", Config: sim.AccountConfig{Balance: 1234}}); err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(dir, "snap.db")
+	if err := st.Backup(ctx, dest); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Backup(ctx, dest); err == nil {
+		t.Fatal("backup must refuse to overwrite an existing file")
+	}
+
+	// later changes to the live DB must not appear in the snapshot, and the snapshot opens on its own
+	if _, err := st.CreateAccount(ctx, u.ID, sim.Account{Name: "Later", Category: "cash", Owner: "self", Config: sim.AccountConfig{Balance: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := Open(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer snap.Close()
+	as, err := snap.ListAccounts(ctx, u.ID)
+	if err != nil || len(as) != 1 || as[0].Name != "Cash" || as[0].Config.Balance != 1234 {
+		t.Fatalf("snapshot contents: %v %v", err, as)
+	}
+	if n, _ := snap.CountUsers(ctx); n != 1 {
+		t.Fatalf("users in snapshot: %d", n)
+	}
+}

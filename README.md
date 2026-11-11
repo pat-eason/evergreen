@@ -35,7 +35,7 @@
 - **Plan** — Monte Carlo projection (median vs. 10th percentile), probability of success, sustainable monthly spending, income events and spending goals, and a detailed cash-flow table. Save snapshots to compare scenarios.
 - **Smart Withdrawal** — year-by-year retirement income sources (income events, taxable, tax-deferred, tax-free), estimated taxes, budgeted spending and balances, with required minimum distributions, optional Roth conversions and a side-by-side comparison of three withdrawal orders.
 - **Freedom** — Contribution Crossover, Coast FIRE and Financial Freedom, with sliders for retirement age, contributions, spending, return, withdrawal rate and inflation.
-- **Accounts & security** — email and password sign-in; sessions are HttpOnly cookies, passwords are bcrypt-hashed, and every record is scoped to its owner. Change your email or password from the account menu.
+- **Accounts & security** — email and password sign-in; sessions are HttpOnly cookies (Secure behind HTTPS), passwords are bcrypt-hashed, sign-in is rate limited per email and per address, and every record is scoped to its owner. A server can lock sign-ups after the first account (`ALLOW_REGISTRATION=false`). Change your email or password from the account menu.
 - **Responsive UI** — a frosted-glass interface with a collapsible left sidebar on tablet-landscape and wider screens and a top bar on smaller ones.
 
 ## Tech stack
@@ -45,7 +45,7 @@
 | Frontend  | Vue 3 + TypeScript (Vite), hand-written SVG charts, no UI framework |
 | API       | Go (`net/http`), cookie sessions, bcrypt                            |
 | Database  | SQLite (pure-Go `modernc.org/sqlite`, no CGO), stored in a volume   |
-| Packaging | Docker Compose (nginx serves the SPA and proxies `/api`)            |
+| Packaging | Docker Compose (Caddy serves the SPA, proxies `/api` and handles HTTPS) |
 
 ## Run it with Docker
 
@@ -63,7 +63,15 @@ docker compose cp api:/data/wellness.db ./wellness-backup.db
 
 To stop the app and keep your data: `docker compose down`. To wipe everything: `docker compose down -v`.
 
-If you serve the app over HTTPS, set `COOKIE_SECURE: "true"` on the `api` service.
+Back up the database while the app is running:
+
+```bash
+docker compose exec -T api api backup      # snapshot lands in /data/backups (newest 14 kept)
+```
+
+## Deploy it
+
+A step-by-step guide for a DigitalOcean droplet (automatic HTTPS, locked-down sign-ups, nightly backups and a tested restore) is in **[DEPLOY.md](DEPLOY.md)**. In short, set `SITE_ADDRESS` to your domain in `.env` (see `.env.example`) and run `docker compose up -d --build`.
 
 ## Develop locally
 
@@ -105,7 +113,7 @@ All of the math lives in [`backend/internal/sim`](backend/internal/sim).
 
 All routes are under `/api`, JSON, and cookie-authenticated except `auth/*` and `health`.
 
-`POST auth/register|login|logout` · `GET me`, `PUT me/email|password` · `GET|PUT profile` · `GET|POST members`, `PUT|DELETE members/{id}` · `GET|POST accounts`, `PUT|DELETE accounts/{id}`, `POST accounts/{id}/value` · `GET ledger`, `GET ledger/history` · `GET|POST events`, `PUT|DELETE events/{id}` · `GET budgets`, `GET|PUT|DELETE budgets/{YYYY-MM}`, `POST budgets/{month}/copy|apply` · `POST plan/simulate` · `POST freedom/analyze` · `GET|POST calculations`, `DELETE calculations/{id}`
+`GET config` · `POST auth/register|login|logout` · `GET me`, `PUT me/email|password` · `GET|PUT profile` · `GET|POST members`, `PUT|DELETE members/{id}` · `GET|POST accounts`, `PUT|DELETE accounts/{id}`, `POST accounts/{id}/value` · `GET ledger`, `GET ledger/history` · `GET|POST events`, `PUT|DELETE events/{id}` · `GET budgets`, `GET|PUT|DELETE budgets/{YYYY-MM}`, `POST budgets/{month}/copy|apply` · `POST plan/simulate` · `POST freedom/analyze` · `GET|POST calculations`, `DELETE calculations/{id}`
 
 ## Project layout
 

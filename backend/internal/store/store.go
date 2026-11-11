@@ -252,6 +252,22 @@ func (s *Store) SetPassword(ctx context.Context, id int64, hash, keepToken strin
 	return tx.Commit()
 }
 
+// CountUsers returns how many accounts exist.
+func (s *Store) CountUsers(ctx context.Context) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users`).Scan(&n)
+	return n, err
+}
+
+// Backup writes a consistent snapshot of the database to dest using VACUUM INTO,
+// which is safe to run while the API is serving traffic. dest must not exist.
+func (s *Store) Backup(ctx context.Context, dest string) error {
+	if _, err := s.db.ExecContext(ctx, `VACUUM INTO ?`, dest); err != nil {
+		return fmt.Errorf("backup: %w", err)
+	}
+	return nil
+}
+
 func hashToken(t string) string {
 	h := sha256.Sum256([]byte(t))
 	return hex.EncodeToString(h[:])

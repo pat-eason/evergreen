@@ -478,3 +478,122 @@ func TestLedgerMortgageTracksHomeValue(t *testing.T) {
 		t.Fatalf("mortgage point: %v", last)
 	}
 }
+
+func newServerWith(t *testing.T, cfg Config) http.Handler {
+	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return New(st, cfg)
+}
+
+func TestClosedRegistrationAllowsOnlyTheFirstAccount(t *testing.T) {
+	srv := newServerWith(t, Config{RegistrationClosed: true})
+	c := &client{t: t, srv: srv}
+
+	_, cfg := c.do("GET", "/api/config", nil)
+	if cfg["registration_open"] != true {
+		t.Fatalf("a fresh install must allow bootstrap sign-up: %v", cfg)
+	}
+	if w, _ := c.do("POST", "/api/auth/register", map[string]string{"email": "owner@example.com", "password": "correct horse"}); w.Code != 200 {
+		t.Fatalf("first account: %d", w.Code)
+	}
+	_, cfg = c.do("GET", "/api/config", nil)
+	if cfg["registration_open"] != false {
+		t.Fatalf("registration should lock after the first account: %v", cfg)
+	}
+	other := &client{t: t, srv: srv}
+	if w, _ := other.do("POST", "/api/auth/register", map[string]string{"email": "intruder@example.com", "password": "correct horse"}); w.Code != 403 {
+		t.Fatalf("second account on a closed server: %d", w.Code)
+	}
+	// the owner can still sign in
+	if w, _ := (&client{t: t, srv: srv}).do("POST", "/api/auth/login", map[string]string{"email": "owner@example.com", "password": "correct horse"}); w.Code != 200 {
+		t.Fatalf("owner login: %d", w.Code)
+	}
+}
+
+func TestOpenRegistrationByDefault(t *testing.T) {
+	srv := newServer(t)
+	for _, n := range []string{"a", "b", "c"} {
+		login(t, srv, n)
+	}
+	_, cfg := (&client{t: t, srv: srv}).do("GET", "/api/config", nil)
+	if cfg["registration_open"] != true {
+		t.Fatalf("default config: %v", cfg)
+	}
+}
+
+func TestCookieSecureBehindHTTPSProxy(t *testing.T) {
+	srv := newServer(t)
+	post := func(proto string) *http.Cookie {
+		var buf bytes.Buffer
+		json.NewEncoder(&buf).Encode(map[string]string{"email": proto + "@example.com", "password": "correct horse"})
+		r := httptest.NewRequest("POST", "/api/auth/register", &buf)
+		r.Header.Set("Content-Type", "application/json")
+		if proto == "https" {
+			r.Header.Set("X-Forwarded-Proto", "https")
+		}
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, r)
+		for _, c := range w.Result().Cookies() {
+			if c.Name == cookieName {
+				return c
+			}
+		}
+		t.Fatalf("no session cookie for %s", proto)
+		return nil
+	}
+	if c := post("https"); !c.Secure || !c.HttpOnly {
+		t.Fatalf("proxied HTTPS cookie must be Secure+HttpOnly: %+v", c)
+	}
+	if c := post("http"); c.Secure {
+		t.Fatalf("plain HTTP (local dev) must not set Secure or the browser would drop it: %+v", c)
+	}
+	forced := newServerWith(t, Config{CookieSecure: true})
+	w, _ := (&client{t: t, srv: forced}).do("POST", "/api/auth/register", map[string]string{"email": "x@example.com", "password": "correct horse"})
+	if cs := w.Result().Cookies(); len(cs) == 0 || !cs[0].Secure {
+		t.Fatal("COOKIE_SECURE should force the flag")
+	}
+}
+
+func TestClientIPAndPerIPThrottle(t *testing.T) {
+	r := httptest.NewRequest("GET", "/", nil)
+	r.RemoteAddr = "10.0.0.9:5555"
+	if clientIP(r) != "10.0.0.9" {
+		t.Fatalf("remote addr: %s", clientIP(r))
+	}
+	r.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.2")
+	if clientIP(r) != "203.0.113.7" {
+		t.Fatalf("forwarded: %s", clientIP(r))
+	}
+
+	// one address guessing across many different emails is slowed down even
+	// though no single email hits its own limit
+	srv := newServer(t)
+	var last int
+	for i := 0; i < ipFailureLimit+2; i++ {
+		var buf bytes.Buffer
+		json.NewEncoder(&buf).Encode(map[string]string{"email": itoa(i) + "@example.com", "password": "wrong password"})
+		req := httptest.NewRequest("POST", "/api/auth/login", &buf)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Forwarded-For", "198.51.100.4")
+		w := httptest.NewRecorder()
+		srv.ServeHTTP(w, req)
+		last = w.Code
+	}
+	if last != 429 {
+		t.Fatalf("expected per-IP throttle, got %d", last)
+	}
+	// a different address is unaffected
+	var buf bytes.Buffer
+	json.NewEncoder(&buf).Encode(map[string]string{"email": "z@example.com", "password": "wrong password"})
+	req := httptest.NewRequest("POST", "/api/auth/login", &buf)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Forwarded-For", "198.51.100.99")
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != 401 {
+		t.Fatalf("other IP should just get 401, got %d", w.Code)
+	}
+}
