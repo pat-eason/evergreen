@@ -42,9 +42,9 @@ export const api = {
 
   recordValue: (id: number, v: { balance: number; home_value?: number; reason: ValueReason; as_of?: string; note?: string }) =>
     req<{ account: Account; applied: boolean }>('POST', `/accounts/${id}/value`, v),
-  ledger: (q: { account_id?: number; limit?: number; offset?: number } = {}) =>
+  ledger: (q: { account_id?: number; limit?: number; offset?: number; from?: string; to?: string } = {}) =>
     req<{ entries: LedgerEntry[]; total: number }>('GET', '/ledger' + qs(q)),
-  history: (q: { months?: number; interval?: string; account_id?: number; by_account?: boolean } = {}) =>
+  history: (q: { months?: number; interval?: string; account_id?: number; by_account?: boolean; from?: string; to?: string } = {}) =>
     req<History>('GET', '/ledger/history' + qs({ ...q, by_account: q.by_account ? 1 : undefined })),
 
   members: () => req<Member[]>('GET', '/members'),

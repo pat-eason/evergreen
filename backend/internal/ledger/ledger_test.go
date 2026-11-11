@@ -181,3 +181,31 @@ func TestBackfillBeforeCreationDoesNotDoubleCountFunding(t *testing.T) {
 		t.Fatalf("history should start at the backfilled opening balance: %+v", h.Points[0])
 	}
 }
+
+func TestExplicitRange(t *testing.T) {
+	// sample(): Jan 1 open (10k), Feb 1 deposit (12k), Mar 1 +1.5k value (13.5k), Apr 1 -600 value (12.9k)
+	h := Build(sample(), Options{Now: day("2026-06-01"), From: day("2026-02-01"), To: day("2026-03-15"), Interval: "day"})
+	if h.Points[0].Date != "2026-02-01" || h.Points[len(h.Points)-1].Date != "2026-03-15" {
+		t.Fatalf("range bounds: %s .. %s", h.Points[0].Date, h.Points[len(h.Points)-1].Date)
+	}
+	last := h.Points[len(h.Points)-1]
+	if last.Investments != 13500 {
+		t.Fatalf("entries after the end date must be ignored: %v", last.Investments)
+	}
+	// Feb 1 (12k, after the 2k deposit) -> Mar 15 (13.5k): +1.5k growth, no new contributions
+	if !near(h.Summary.Growth, 1500) || !near(h.Summary.Contributions, 0) {
+		t.Fatalf("summary over a custom range: %+v", h.Summary)
+	}
+
+	// a range entirely before the first entry is empty, not a row of zeros
+	early := Build(sample(), Options{Now: day("2026-06-01"), From: day("2025-01-01"), To: day("2025-12-31")})
+	if len(early.Points) != 0 {
+		t.Fatalf("expected no points, got %d", len(early.Points))
+	}
+
+	// a range that starts before the ledger does is clipped to the first entry
+	clipped := Build(sample(), Options{Now: day("2026-06-01"), From: day("2025-01-01"), To: day("2026-01-10"), Interval: "day"})
+	if clipped.Points[0].Date != "2026-01-01" {
+		t.Fatalf("clipped start: %s", clipped.Points[0].Date)
+	}
+}

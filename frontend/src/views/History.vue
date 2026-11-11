@@ -2,14 +2,14 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import CountUp from '@/components/CountUp.vue'
 import Icon from '@/components/Icon.vue'
-import LineChart, { type Series } from '@/components/LineChart.vue'
+import LineChart, { type Series, type TipExtra, type TipRow } from '@/components/LineChart.vue'
 import ValueDrawer from '@/components/ValueDrawer.vue'
 import { api } from '@/lib/api'
-import { compact, dateTime, dayNumber, fromDayNumber, money, shortDate, signedMoney, signedPct } from '@/lib/format'
+import { compact, dateTime, dayNumber, fromDayNumber, money, parseDay, shortDate, signedMoney, signedPct, todayISO } from '@/lib/format'
 import { errMsg, loadData, ownerName, state, toast } from '@/lib/store'
 import type { History, LedgerEntry } from '@/lib/types'
 
-type Range = 3 | 6 | 12 | 0
+type Range = 3 | 6 | 12 | 0 | 'custom'
 type Mode = 'networth' | 'balance' | 'growth' | 'accounts'
 
 const range = ref<Range>(12)
@@ -28,13 +28,57 @@ const modes: { id: Mode; l: string }[] = [
 ]
 const COLORS = ['var(--c-accent)', 'var(--c-mint)', 'var(--c-rose)', 'var(--c-cream)', 'var(--c-green)', 'var(--c-wine)']
 
+// ---- the period being viewed: a preset, or a custom from/to ----
+const customFrom = ref('')
+const customTo = ref('')
+const isoMonthsAgo = (m: number) => {
+  const d = new Date()
+  d.setMonth(d.getMonth() - m)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+const isoFromDay = (n: number) => fromDayNumber(n).toISOString().slice(0, 10) // day numbers are UTC-based
+
+const rangeError = computed(() => {
+  if (range.value !== 'custom') return ''
+  if (!customFrom.value || !customTo.value) return 'Choose both a start and an end date.'
+  if (customTo.value < customFrom.value) return 'The end date is before the start date.'
+  return ''
+})
+const period = computed<{ from?: string; to?: string }>(() => {
+  if (range.value === 'custom') return rangeError.value ? {} : { from: customFrom.value, to: customTo.value }
+  return range.value === 0 ? {} : { from: isoMonthsAgo(range.value) }
+})
+const periodLabel = computed(() => {
+  const p = period.value
+  if (range.value === 0 || (!p.from && !p.to)) return ''
+  const f = (iso: string) => shortDate(parseDay(iso), true)
+  return p.to ? `${f(p.from!)} – ${f(p.to)}` : `since ${f(p.from!)}`
+})
+
+/** Switch to a custom range, starting from whatever is on screen now. */
+function startCustom() {
+  if (range.value === 'custom') return
+  const pts0 = history.value?.points ?? []
+  customFrom.value = pts0.length ? pts0[0].date : isoMonthsAgo(3)
+  customTo.value = pts0.length ? pts0[pts0.length - 1].date : todayISO()
+  range.value = 'custom'
+}
+/** Called when the user drags across the chart. */
+function onSelect(a: number, b: number) {
+  customFrom.value = isoFromDay(Math.round(a))
+  customTo.value = isoFromDay(Math.round(b))
+  range.value = 'custom'
+}
+
 async function loadHistory() {
-  try { history.value = await api.history({ months: range.value, by_account: true }) } catch (e) { toast(errMsg(e), 'err') } finally { loading.value = false }
+  if (rangeError.value) return
+  try { history.value = await api.history({ ...period.value, by_account: true }) } catch (e) { toast(errMsg(e), 'err') } finally { loading.value = false }
 }
 async function loadEntries(reset = true) {
   loadingMore.value = true
   try {
-    const r = await api.ledger({ account_id: accountFilter.value || undefined, limit: 40, offset: reset ? 0 : entries.value.length })
+    if (rangeError.value) { loadingMore.value = false; return }
+    const r = await api.ledger({ account_id: accountFilter.value || undefined, limit: 40, offset: reset ? 0 : entries.value.length, ...period.value })
     entries.value = reset ? r.entries : [...entries.value, ...r.entries]
     total.value = r.total
   } catch (e) { toast(errMsg(e), 'err') } finally { loadingMore.value = false }
@@ -45,7 +89,9 @@ onMounted(async () => {
   try { await loadData() } catch { /* shown elsewhere */ }
   await refresh()
 })
-watch(range, loadHistory)
+// refetch when the period changes (debounced so typing in the date boxes doesn't spam the API)
+let periodTimer: ReturnType<typeof setTimeout> | undefined
+watch(period, () => { clearTimeout(periodTimer); periodTimer = setTimeout(refresh, 250) })
 watch(accountFilter, () => loadEntries())
 
 const pts = computed(() => history.value?.points ?? [])
@@ -96,6 +142,24 @@ const xFormat = (v: number) => {
 
 const isGood = (v: number) => v >= 0
 
+// ---- tooltip totals ----
+const signedCompact = (v: number) => `${v < 0 ? '−' : '+'}${compact(Math.abs(v))}`
+const tone = (v: number): 'pos' | 'neg' => (v >= 0 ? 'pos' : 'neg')
+const tooltipExtra = (rows: TipRow[]): TipExtra[] => {
+  const y = (k: string) => rows.find((r) => r.key === k)?.y
+  if (mode.value === 'balance') {
+    const a = y('a'), l = y('l')
+    if (a == null || l == null) return []
+    return [{ label: 'Total (net worth)', value: compact(a - l), tone: tone(a - l) }]
+  }
+  if (mode.value === 'growth') {
+    const b = y('bal'), c = y('con')
+    if (b == null || c == null) return []
+    return [{ label: 'Difference (growth)', value: signedCompact(b - c), tone: tone(b - c) }]
+  }
+  return []
+}
+
 // ---- ledger rows ----
 const reasonLabel = (e: LedgerEntry): string => {
   const asset = e.category === 'cash' || e.category === 'investment'
@@ -115,7 +179,8 @@ const impact = (e: LedgerEntry) => (isLiab(e) ? -e.delta : e.delta)
 const chipClass = (e: LedgerEntry) => (e.first ? '' : e.kind === 'updated' || e.kind === 'created' ? (impact(e) >= 0 ? 'good' : 'bad') : e.kind === 'deleted' ? 'bad' : '')
 const rowDate = (iso: string) => dateTime(iso)
 const hasMore = computed(() => entries.value.length < total.value)
-const noHistory = computed(() => !loading.value && !total.value && !entries.value.length)
+// "no history at all" means no accounts yet; an empty *range* is handled separately
+const noHistory = computed(() => !loading.value && !state.accounts.length && !total.value)
 </script>
 
 <template>
@@ -138,18 +203,34 @@ const noHistory = computed(() => !loading.value && !total.value && !entries.valu
     <section class="glass pad rise" style="margin-top: 18px; --i: 2">
       <div class="card-head">
         <div class="tabs" role="tablist" aria-label="Chart view"><button v-for="m in modes" :key="m.id" class="tab" role="tab" :class="{ on: mode === m.id }" @click="mode = m.id">{{ m.l }}</button></div>
-        <div class="tabs" role="tablist" aria-label="Time range"><button v-for="r in ranges" :key="r.v" class="tab" role="tab" :class="{ on: range === r.v }" @click="range = r.v">{{ r.l }}</button></div>
+        <div class="tabs" role="tablist" aria-label="Time range">
+          <button v-for="r in ranges" :key="r.v" class="tab" role="tab" :class="{ on: range === r.v }" @click="range = r.v">{{ r.l }}</button>
+          <button class="tab" role="tab" :class="{ on: range === 'custom' }" @click="startCustom">Custom</button>
+        </div>
+      </div>
+
+      <div v-if="range === 'custom'" class="custom">
+        <label class="field"><span>From</span><input v-model="customFrom" class="input" type="date" min="1990-01-01" :max="customTo || todayISO()" /></label>
+        <label class="field"><span>To</span><input v-model="customTo" class="input" type="date" :min="customFrom || '1990-01-01'" :max="todayISO()" /></label>
+        <button class="btn sm" type="button" @click="range = 12">Reset to 1 year</button>
+        <p v-if="rangeError" class="err" role="alert">{{ rangeError }}</p>
       </div>
 
       <div v-if="loading" class="skeleton" style="height: 340px" />
       <div v-else-if="noHistory" class="empty"><h3>No history yet</h3><p>Add an account and your ledger starts filling in automatically.</p><RouterLink to="/accounts" class="btn sm" style="margin-top: 12px">Add accounts</RouterLink></div>
+      <div v-else-if="!enough && range === 'custom'" class="empty">
+        <h3>Not much happened in this range</h3>
+        <p>There aren't two points of history between these dates. Try a wider range, or drag across a longer stretch of the timeline.</p>
+        <button class="btn sm" style="margin-top: 12px" @click="range = 0">Show everything</button>
+      </div>
       <div v-else-if="!enough" class="empty">
         <h3>Your history starts today</h3>
         <p>You have a starting snapshot of <b class="text num">{{ money(pts[0]?.net_worth ?? 0) }}</b>. The timeline appears once balances change on a second day — record a value whenever you get a new statement.</p>
         <button class="btn sm accent" style="margin-top: 12px" @click="valueOpen = true"><Icon name="plus" :size="16" /> Record a value</button>
       </div>
       <template v-else>
-        <LineChart :key="mode + range + series.length" :series="series" :height="340" :x-ticks="xTicks" :x-format="xFormat" :y-format="compact" :from-zero="mode === 'balance' || mode === 'accounts'" />
+        <LineChart :key="mode + String(range) + period.from + period.to + series.length" :series="series" :height="340" :x-ticks="xTicks" :x-format="xFormat" :y-format="compact" :from-zero="mode === 'balance' || mode === 'accounts'" selectable :tooltip-extra="tooltipExtra" @select="onSelect" />
+        <p class="small faint hint"><Icon name="info" :size="14" /> Tip: drag across the chart to zoom into a date range.</p>
         <div class="legend" style="margin-top: 10px"><span v-for="s in series" :key="s.key"><i class="dot" :style="{ background: s.color }" />{{ s.label }}</span></div>
         <p v-if="mode === 'growth'" class="small muted" style="margin-top: 10px">The gap between the two lines is your market growth. Record deposits and withdrawals as such so they aren't counted as gains or losses.</p>
       </template>
@@ -157,7 +238,7 @@ const noHistory = computed(() => !loading.value && !total.value && !entries.valu
 
     <section class="glass pad rise" style="margin-top: 18px; --i: 3">
       <div class="card-head">
-        <div><h2><Icon name="history" :size="18" /> Ledger</h2><span class="sub">{{ total }} {{ total === 1 ? 'entry' : 'entries' }}, newest first</span></div>
+        <div><h2><Icon name="history" :size="18" /> Ledger</h2><span class="sub">{{ total }} {{ total === 1 ? 'entry' : 'entries' }}<template v-if="periodLabel"> · {{ periodLabel }}</template>, newest first</span></div>
         <select v-model.number="accountFilter" class="input sel" aria-label="Filter by account">
           <option :value="0">All accounts</option>
           <option v-for="a in state.accounts" :key="a.id" :value="a.id">{{ a.name }}</option>
@@ -194,6 +275,11 @@ const noHistory = computed(() => !loading.value && !total.value && !entries.valu
 
 <style scoped>
 .kpis { margin-bottom: 0; }
+.custom { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 14px; margin: -2px 0 16px; padding: 14px; border-radius: 16px; background: rgba(0, 0, 0, 0.2); border: 1px solid var(--line); }
+.custom .field { min-width: 160px; }
+.custom .input { height: 40px; color-scheme: dark; }
+.custom .err { flex-basis: 100%; }
+.hint { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
 .text { color: var(--text); }
 .sel { width: auto; min-width: 200px; height: 40px; }
 .t.lg td { padding: 13px 14px; }

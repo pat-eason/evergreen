@@ -157,6 +157,7 @@ type History struct {
 type Options struct {
 	Now       time.Time
 	From      time.Time // zero = first entry
+	To        time.Time // zero = today (or the latest entry, if later)
 	Interval  string    // auto | day | week | month
 	AccountID int64     // 0 = whole household
 	ByAccount bool
@@ -205,7 +206,14 @@ func Build(entries []Entry, opt Options) History {
 	if last := startOfDay(es[len(es)-1].OccurredAt); last.After(end) {
 		end = last
 	}
+	if !opt.To.IsZero() {
+		end = startOfDay(opt.To) // an explicit end ignores anything recorded after it
+	}
 	start := startOfDay(es[0].OccurredAt)
+	if end.Before(start) {
+		h.Interval = opt.Interval
+		return h // the whole range predates the first entry
+	}
 	if !opt.From.IsZero() && startOfDay(opt.From).After(start) {
 		start = startOfDay(opt.From)
 	}

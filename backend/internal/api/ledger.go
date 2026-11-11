@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -151,9 +152,43 @@ func (s *Server) recordValue(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"account": a, "applied": applied})
 }
 
+// dateRange is an optional inclusive UTC day range from ?from=YYYY-MM-DD&to=YYYY-MM-DD.
+type dateRange struct{ from, to time.Time }
+
+func parseDateRange(q url.Values) (dateRange, string) {
+	var dr dateRange
+	parse := func(name string) (time.Time, string) {
+		v := q.Get(name)
+		if v == "" {
+			return time.Time{}, ""
+		}
+		d, err := time.Parse("2006-01-02", v)
+		if err != nil || d.Year() < 1990 || d.Year() > 2200 {
+			return time.Time{}, name + " must be a date like 2026-03-31"
+		}
+		return d, ""
+	}
+	var msg string
+	if dr.from, msg = parse("from"); msg != "" {
+		return dr, msg
+	}
+	if dr.to, msg = parse("to"); msg != "" {
+		return dr, msg
+	}
+	if !dr.from.IsZero() && !dr.to.IsZero() && dr.to.Before(dr.from) {
+		return dr, "the end date can't be before the start date"
+	}
+	return dr, ""
+}
+
 func (s *Server) listLedger(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r.Context())
 	q := r.URL.Query()
+	dr, bad := parseDateRange(q)
+	if bad != "" {
+		writeErr(w, 400, bad)
+		return
+	}
 	accountID, _ := strconv.ParseInt(q.Get("account_id"), 10, 64)
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
@@ -176,6 +211,12 @@ func (s *Server) listLedger(w http.ResponseWriter, r *http.Request) {
 		if accountID != 0 && e.AccountID != accountID {
 			continue
 		}
+		if !dr.from.IsZero() && e.OccurredAt.Before(dr.from) {
+			continue
+		}
+		if !dr.to.IsZero() && !e.OccurredAt.Before(dr.to.AddDate(0, 0, 1)) { // "to" is inclusive
+			continue
+		}
 		filtered = append(filtered, e)
 	}
 	total := len(filtered)
@@ -192,10 +233,15 @@ func (s *Server) listLedger(w http.ResponseWriter, r *http.Request) {
 func (s *Server) ledgerHistory(w http.ResponseWriter, r *http.Request) {
 	u := userFrom(r.Context())
 	q := r.URL.Query()
+	dr, bad := parseDateRange(q)
+	if bad != "" {
+		writeErr(w, 400, bad)
+		return
+	}
 	accountID, _ := strconv.ParseInt(q.Get("account_id"), 10, 64)
 	months, _ := strconv.Atoi(q.Get("months"))
-	opt := ledger.Options{Now: time.Now(), Interval: q.Get("interval"), AccountID: accountID, ByAccount: q.Get("by_account") == "1"}
-	if months > 0 && months <= 600 {
+	opt := ledger.Options{Now: time.Now(), Interval: q.Get("interval"), AccountID: accountID, ByAccount: q.Get("by_account") == "1", From: dr.from, To: dr.to}
+	if months > 0 && months <= 600 && dr.from.IsZero() {
 		opt.From = opt.Now.AddDate(0, -months, 0)
 	}
 	all, err := s.st.ListLedger(r.Context(), u.ID, 0)

@@ -597,3 +597,55 @@ func TestClientIPAndPerIPThrottle(t *testing.T) {
 		t.Fatalf("other IP should just get 401, got %d", w.Code)
 	}
 }
+
+func TestHistoryAndLedgerDateRanges(t *testing.T) {
+	srv := newServer(t)
+	a := login(t, srv, "alice")
+	_, acc := a.do("POST", "/api/accounts", map[string]any{"name": "IRA", "category": "investment", "config": map[string]any{"balance": 1000, "tax_treatment": "tax_free"}})
+	path := "/api/accounts/" + itoa(int(acc["id"].(float64))) + "/value"
+	rec := func(date string, bal float64) {
+		if w, out := a.do("POST", path, map[string]any{"balance": bal, "as_of": date}); w.Code != 200 {
+			t.Fatalf("record %s: %d %v", date, w.Code, out)
+		}
+	}
+	rec("2026-01-10", 800)
+	rec("2026-02-10", 900)
+	rec("2026-03-10", 1100)
+
+	// history clipped to a custom window
+	w, h := a.do("GET", "/api/ledger/history?from=2026-02-01&to=2026-02-28&interval=day", nil)
+	if w.Code != 200 {
+		t.Fatalf("history: %d", w.Code)
+	}
+	pts := h["points"].([]any)
+	if pts[0].(map[string]any)["date"] != "2026-02-01" || pts[len(pts)-1].(map[string]any)["date"] != "2026-02-28" {
+		t.Fatalf("window: %v .. %v", pts[0], pts[len(pts)-1])
+	}
+	if end := pts[len(pts)-1].(map[string]any); end["investments"].(float64) != 900 {
+		t.Fatalf("March's value must not leak into a February window: %v", end)
+	}
+	if sum := h["summary"].(map[string]any); sum["growth"].(float64) != 100 {
+		t.Fatalf("growth Jan 31 -> Feb 28 should be +100 (800 -> 900): %v", sum)
+	}
+
+	// ledger entries within the window; "to" is inclusive of its whole day
+	es := ledgerEntries(t, a, "?from=2026-02-10&to=2026-02-10")
+	if len(es) != 1 || es[0]["balance"].(float64) != 900 {
+		t.Fatalf("single-day window: %v", es)
+	}
+	if es := ledgerEntries(t, a, "?from=2026-01-01&to=2026-03-31"); len(es) != 3 {
+		t.Fatalf("three dated entries expected in Q1, got %d", len(es))
+	}
+	if es := ledgerEntries(t, a, "?to=2026-01-31"); len(es) != 1 {
+		t.Fatalf("only the January entry should be on or before Jan 31, got %d", len(es))
+	}
+
+	for _, bad := range []string{"?from=nope", "?to=2026-13-40", "?from=2026-03-01&to=2026-02-01", "?from=1800-01-01"} {
+		if w, _ := a.do("GET", "/api/ledger/history"+bad, nil); w.Code != 400 {
+			t.Fatalf("history%s should be rejected, got %d", bad, w.Code)
+		}
+		if w, _ := a.do("GET", "/api/ledger"+bad, nil); w.Code != 400 {
+			t.Fatalf("ledger%s should be rejected, got %d", bad, w.Code)
+		}
+	}
+}
