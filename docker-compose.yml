@@ -1,16 +1,39 @@
 # Local:       docker compose up --build        (http://localhost:8080)
 # Production:  see DEPLOY.md and .env.example
 services:
-  api:
-    build: ./backend
+  db:
+    image: postgres:17-alpine
     restart: unless-stopped
     environment:
-      DB_PATH: /data/wellness.db
+      POSTGRES_USER: evergreen
+      POSTGRES_DB: evergreen
+      # Only read when the volume is first created. Set a real one in .env for production.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-evergreen}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U evergreen -d evergreen"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      # Loopback only: handy for local tools and `go run`; never reachable from outside the host.
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+
+  api:
+    build: ./backend
+    # On the droplet these are pulled from the registry (see DEPLOY.md); locally
+    # `docker compose up --build` builds and tags them under the same names.
+    image: ${REGISTRY:-ghcr.io/pat-eason}/evergreen-api:${TAG:-latest}
+    restart: unless-stopped
+    environment:
+      # Point this at any Postgres (e.g. a DigitalOcean Managed Database) to use that instead.
+      DATABASE_URL: ${DATABASE_URL:-postgres://evergreen:${POSTGRES_PASSWORD:-evergreen}@db:5432/evergreen?sslmode=disable}
       # "false" locks sign-ups once the first account exists
       ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
-      BACKUP_KEEP: ${BACKUP_KEEP:-14}
-    volumes:
-      - wellness-data:/data
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/api/health >/dev/null || exit 1"]
       interval: 10s
@@ -19,6 +42,7 @@ services:
 
   web:
     build: ./frontend
+    image: ${REGISTRY:-ghcr.io/pat-eason}/evergreen-web:${TAG:-latest}
     restart: unless-stopped
     depends_on:
       api:
@@ -35,6 +59,6 @@ services:
       - caddy-config:/config
 
 volumes:
-  wellness-data:
+  pgdata:       # the database; deleting this volume deletes all data
   caddy-data:
   caddy-config:

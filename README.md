@@ -1,6 +1,6 @@
 # Evergreen
 
-**A local-first financial planner.** Budget by month, project your retirement with Monte Carlo simulation, plan tax-smart withdrawals, and see exactly when you hit Coast FIRE and financial freedom — with everything stored in a SQLite database on your own machine.
+**A local-first financial planner.** Budget by month, project your retirement with Monte Carlo simulation, plan tax-smart withdrawals, and see exactly when you hit Coast FIRE and financial freedom — with everything stored in a PostgreSQL database that you run and own.
 
 ![Evergreen dashboard](docs/screenshots/dashboard.jpg)
 
@@ -44,7 +44,7 @@
 | --------- | ------------------------------------------------------------------- |
 | Frontend  | Vue 3 + TypeScript (Vite), hand-written SVG charts, no UI framework |
 | API       | Go (`net/http`), cookie sessions, bcrypt                            |
-| Database  | SQLite (pure-Go `modernc.org/sqlite`, no CGO), stored in a volume   |
+| Database  | PostgreSQL 17 (`pgx`), versioned migrations, data in a Docker volume |
 | Packaging | Docker Compose (Caddy serves the SPA, proxies `/api` and handles HTTPS) |
 
 ## Run it with Docker
@@ -55,31 +55,27 @@ docker compose up --build
 
 Open <http://localhost:8080>, create an account, and start with **Accounts → Add account**.
 
-Data lives in the `wellness-data` Docker volume (`/data/wellness.db` in the API container), so it survives restarts and rebuilds. To back it up:
+Data lives in PostgreSQL, in the `pgdata` Docker volume, so it survives restarts, rebuilds and redeploys. **`docker compose down -v` deletes it**; plain `docker compose down` does not.
+
+Back up and restore the database (works while the app is running):
 
 ```bash
-docker compose cp api:/data/wellness.db ./wellness-backup.db
-```
-
-To stop the app and keep your data: `docker compose down`. To wipe everything: `docker compose down -v`.
-
-Back up the database while the app is running:
-
-```bash
-docker compose exec -T api api backup      # snapshot lands in /data/backups (newest 14 kept)
+./deploy/backup.sh                                   # -> ./backups/evergreen-<timestamp>.dump (newest 14 kept)
+./deploy/restore.sh backups/evergreen-<timestamp>.dump
 ```
 
 ## Deploy it
 
-A step-by-step guide for a DigitalOcean droplet (automatic HTTPS, locked-down sign-ups, nightly backups and a tested restore) is in **[DEPLOY.md](DEPLOY.md)**. In short, set `SITE_ADDRESS` to your domain in `.env` (see `.env.example`) and run `docker compose up -d --build`.
+A step-by-step guide for a DigitalOcean droplet is in **[DEPLOY.md](DEPLOY.md)**: automatic HTTPS, locked-down sign-ups, nightly backups with a tested restore, and **deploys from GitHub Actions**. Every push to `main` is tested against a real Postgres, built into images on GitHub's runners, and rolled out to the droplet after a database backup.
 
 ## Develop locally
 
-Requires Go 1.26+, Node 22+ and pnpm.
+Requires Go 1.26+, Node 22+, pnpm and Docker (for Postgres).
 
 ```bash
-# terminal 1 — API on :8081, SQLite at backend/data/wellness.db
-cd backend && go run .
+# terminal 1 — start Postgres, then the API on :8081
+docker compose up -d db
+cd backend && DATABASE_URL='postgres://evergreen:evergreen@localhost:5432/evergreen?sslmode=disable' go run .
 
 # terminal 2 — Vite dev server on :5173 (proxies /api to :8081)
 cd frontend && pnpm install && pnpm dev
@@ -88,6 +84,9 @@ cd frontend && pnpm install && pnpm dev
 Tests and checks:
 
 ```bash
+# database tests need a Postgres; they skip without TEST_DATABASE_URL
+docker run -d --rm --name evergreen-pgtest -e POSTGRES_PASSWORD=test -p 127.0.0.1:54329:5432 postgres:17-alpine
+export TEST_DATABASE_URL='postgres://postgres:test@127.0.0.1:54329/postgres?sslmode=disable'
 cd backend && go vet ./... && go test ./...
 cd frontend && pnpm build        # type-checks (vue-tsc) and builds
 ```
@@ -118,7 +117,9 @@ All routes are under `/api`, JSON, and cookie-authenticated except `auth/*` and 
 ## Project layout
 
 ```
-backend/    Go API — internal/api (handlers, auth), internal/store (SQLite), internal/sim (planning engine), internal/ledger (history)
+backend/    Go API — internal/api (handlers, auth), internal/store (Postgres), internal/sim (planning engine), internal/ledger (history)
 frontend/   Vue 3 + TypeScript SPA — src/views (pages), src/components, src/lib (API client, store, helpers)
+deploy/     scripts that run on the droplet (deploy, backup, restore)
+.github/    CI/CD workflow
 docs/       README screenshots
 ```

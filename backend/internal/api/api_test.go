@@ -5,11 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/patrickeason/financial-wellness/backend/internal/store"
+	"github.com/patrickeason/financial-wellness/backend/internal/store/storetest"
 )
 
 type client struct {
@@ -19,12 +18,7 @@ type client struct {
 }
 
 func newServer(t *testing.T) http.Handler {
-	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	return New(st, Config{})
+	return New(storetest.New(t), Config{})
 }
 
 func (c *client) do(method, path string, body any) (*httptest.ResponseRecorder, map[string]any) {
@@ -480,12 +474,7 @@ func TestLedgerMortgageTracksHomeValue(t *testing.T) {
 }
 
 func newServerWith(t *testing.T, cfg Config) http.Handler {
-	st, err := store.Open(filepath.Join(t.TempDir(), "t.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	return New(st, cfg)
+	return New(storetest.New(t), cfg)
 }
 
 func TestClosedRegistrationAllowsOnlyTheFirstAccount(t *testing.T) {

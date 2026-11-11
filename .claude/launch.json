@@ -3,12 +3,10 @@
   "configurations": [
     {
       "name": "api",
-      "runtimeExecutable": "go",
+      "runtimeExecutable": "sh",
       "runtimeArgs": [
-        "-C",
-        "backend",
-        "run",
-        "."
+        "-c",
+        "DATABASE_URL='postgres://evergreen:evergreen@localhost:5432/evergreen?sslmode=disable' exec go -C backend run ."
       ],
       "port": 8081
     },

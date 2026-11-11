@@ -2,18 +2,21 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-Evergreen: a local-first budgeting + retirement-planning app. Vue 3/TypeScript SPA (`frontend/`), Go JSON API with SQLite (`backend/`), packaged with Docker Compose. See `README.md` for the feature list and the simulation methodology.
+Evergreen: a local-first budgeting + retirement-planning app. Vue 3/TypeScript SPA (`frontend/`), Go JSON API with PostgreSQL (`backend/`), packaged with Docker Compose. See `README.md` for the feature list and the simulation methodology.
 
 ## Commands
 
 ```bash
 # Full stack (http://localhost:8080; Caddy serves the SPA, proxies /api -> api:8081 and does HTTPS)
 docker compose up -d --build            # rebuild after code changes (use `--build web` / `api` for one side)
-docker compose down -v                  # DELETES the SQLite volume (all users/data) — omit -v to keep data
+docker compose down -v                  # DELETES the Postgres volume (all users/data) — omit -v to keep data
 
 # Backend (Go 1.26, cwd backend/)
-go run .                                # API on :8081, DB at ./data/wellness.db (env: ADDR, DB_PATH, COOKIE_SECURE, ALLOW_REGISTRATION, BACKUP_KEEP)
-go run . backup [dir]                   # consistent DB snapshot (VACUUM INTO); in Docker: docker compose exec -T api api backup
+docker compose up -d db                 # Postgres on 127.0.0.1:5432 (user/db/password: evergreen)
+DATABASE_URL='postgres://evergreen:evergreen@localhost:5432/evergreen?sslmode=disable' go run .   # API on :8081 (env: ADDR, DATABASE_URL, COOKIE_SECURE, ALLOW_REGISTRATION)
+# database tests skip unless TEST_DATABASE_URL is set; start a throwaway Postgres for them:
+docker run -d --rm --name pgtest -e POSTGRES_PASSWORD=test -p 127.0.0.1:54329:5432 postgres:17-alpine
+export TEST_DATABASE_URL='postgres://postgres:test@127.0.0.1:54329/postgres?sslmode=disable'
 go vet ./... && go test ./...
 go test ./internal/sim -run TestFreedom -v      # single test
 go test ./internal/api -run TestHouseholdAndOwnership -v
@@ -23,7 +26,7 @@ pnpm dev                                # Vite on :5173, proxies /api to localho
 pnpm build                              # vue-tsc --noEmit && vite build  <- run this, not just `pnpm typecheck`
 ```
 
-There is no linter or frontend test suite. Deployment to a droplet is documented in `DEPLOY.md`; to test compose changes without touching real data use a throwaway project (`COMPOSE_PROJECT_NAME=fwtest HTTP_PORT=18080 HTTPS_PORT=18443 docker compose up -d --build`, then `down -v` of *that* project only). `.claude/launch.json` defines `api` (`go -C backend run .`) and `web` preview servers.
+There is no linter or frontend test suite. Deployment to a droplet is documented in `DEPLOY.md`; `.github/workflows/deploy.yml` tests on every PR and, on `main`, builds/pushes the images to GHCR and runs `deploy/deploy.sh` on the droplet over SSH (which backs up the database first). `deploy/backup.sh` / `deploy/restore.sh` wrap `pg_dump` / `pg_restore`; to test compose changes without touching real data use a throwaway project (`COMPOSE_PROJECT_NAME=fwtest HTTP_PORT=18080 HTTPS_PORT=18443 POSTGRES_PORT=15432 docker compose up -d --build`, then `down -v` of *that* project only). `.claude/launch.json` defines `api` (`go -C backend run .`) and `web` preview servers.
 
 ## Gotchas
 
@@ -35,7 +38,8 @@ There is no linter or frontend test suite. Deployment to a droplet is documented
 
 ### Backend (`backend/`)
 - `main.go` wires `store` -> `api.Server`. `internal/store` is the only SQL; `internal/api` is handlers + auth; `internal/sim` is pure planning math with no I/O.
-- **Schema/migrations live in `store.Open`**: `CREATE TABLE IF NOT EXISTS` plus in-place fixes (`pragma_table_info` checks for the old `username` column rename and `ALTER TABLE ADD COLUMN` for `owner`). Add new columns there; there is no migration tool.
+- **Migrations are the `migrations` slice in `store/store.go`**: applied once each, in order, under a Postgres advisory lock, and recorded in `schema_migrations`. **Append** a new entry for any schema change; never edit one that has shipped. An older binary refuses to start against a newer schema (so a rollback after a migration needs the pre-deploy backup restored). Columns are real types (`TIMESTAMPTZ`, `BOOLEAN`, `JSONB` for account config / profile / saved calculations); email uniqueness is a `lower(email)` index. Store methods use `$n` placeholders and `RETURNING id`, and detect unique violations via the pgx error code (`isUnique`).
+- **Database tests** use `storetest.New(t)`: a fresh schema per test inside the Postgres at `TEST_DATABASE_URL`, dropped afterwards (tests skip when it is unset; CI provides a Postgres service). The API tests run through it too.
 - **Every query is scoped by `user_id`** (cross-user access returns 404). Owner references (account/event `owner`) are validated against the caller's household in `resolveOwner`.
 - Deployment behaviour: the API is only reachable through Caddy, which sets `X-Forwarded-For`/`-Proto`; `clientIP` and `secure()` rely on that (cookies get `Secure` automatically over HTTPS). `ALLOW_REGISTRATION=false` closes sign-ups once any user exists (`registrationOpen`; the first account is always allowed). The Caddyfile's CSP only allows same-origin assets, so Vite is configured with `assetsInlineLimit: 0` (inlined `data:` fonts are blocked).
 - Auth: opaque random session token in an HttpOnly cookie (only its SHA-256 is stored); bcrypt passwords; in-memory failed-login throttle (also used for password re-verification). `ServeHTTP` rejects non-JSON bodies as a CSRF guard. Email is lower-cased via `normalizeEmail`.
@@ -45,8 +49,8 @@ There is no linter or frontend test suite. Deployment to a droplet is documented
 - **Event ages belong to their owner.** `loadInputs` shifts a member's event `StartAge` by (primary age − member age) so the engine only ever runs on the primary person's timeline. The UI converts back with `ageShift()` when placing chart markers.
 
 ### Ledger (`internal/ledger`, `api/ledger.go`)
-- Append-only `ledger` table; account create / balance change / settings edit / delete each add a row (hooked in the account handlers, plus `POST /accounts/{id}/value` for dated "record a value"). `account_id` is deliberately **not** a foreign key so history outlives the account. Existing accounts get a starting entry from the backfill SQL in `store.Open` (idempotent).
-- Each row stores the balance **after** the event; `Previous`/`Delta` are derived on read (`Annotate`), so backdated entries never leave stale deltas. `occurred_at` uses a fixed-width timestamp format because it is sorted as text.
+- Append-only `ledger` table; account create / balance change / settings edit / delete each add a row (hooked in the account handlers, plus `POST /accounts/{id}/value` for dated "record a value"). `account_id` is deliberately **not** a foreign key so history outlives the account.
+- Each row stores the balance **after** the event; `Previous`/`Delta` are derived on read (`Annotate`), so backdated entries never leave stale deltas. `occurred_at` is a `TIMESTAMPTZ`.
 - `Build` replays entries into `Point`s (net worth, assets, liabilities, per-category, per-account series). Mortgages carry the home value in `asset_value`. An account's **first** entry is its opening balance and counts as a contribution (even if it was backfilled before the "created" row); later `deposit`/`withdrawal` reasons are flows; everything else is growth/loss. Deleting an account is a withdrawal, so growth already earned is not erased.
 - A dated value earlier than the account's latest entry only adds history (`applied: false`); it does not change the live balance.
 
