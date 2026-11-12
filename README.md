@@ -35,7 +35,7 @@
 - **Plan** — Monte Carlo projection (median vs. 10th percentile), probability of success, sustainable monthly spending, income events and spending goals, and a detailed cash-flow table. Save snapshots to compare scenarios.
 - **Smart Withdrawal** — year-by-year retirement income sources (income events, taxable, tax-deferred, tax-free), estimated taxes, budgeted spending and balances, with required minimum distributions, optional Roth conversions and a side-by-side comparison of three withdrawal orders.
 - **Freedom** — Contribution Crossover, Coast FIRE and Financial Freedom, with sliders for retirement age, contributions, spending, return, withdrawal rate and inflation.
-- **Accounts & security** — email and password sign-in; sessions are HttpOnly cookies (Secure behind HTTPS), passwords are bcrypt-hashed, sign-in is rate limited per email and per address, and every record is scoped to its owner. A server can lock sign-ups after the first account (`ALLOW_REGISTRATION=false`). Change your email or password from the account menu.
+- **Accounts & security** — email and password sign-in; sessions are HttpOnly cookies (Secure behind HTTPS), passwords are bcrypt-hashed, sign-in is rate limited per email and per address, and every record is scoped to its owner. Sign-ups can be `open`, `invite` (shared code, guess-throttled) or `closed` after the first account (`REGISTRATION_MODE`, `REGISTRATION_INVITE_CODE`). Change your email or password from the account menu.
 - **Responsive UI** — a frosted-glass interface with a collapsible left sidebar on tablet-landscape and wider screens and a top bar on smaller ones.
 
 ## Tech stack

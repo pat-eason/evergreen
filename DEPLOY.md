@@ -55,8 +55,8 @@ All apps share one origin, so Evergreen is path-aware:
 Apps on one droplet share a kernel, disk and Docker daemon. The `deploy` user is in the `docker` group, which is
 root-equivalent, so **a compromise of any app or any deploy key is a compromise of every app on the box**, including
 this one's financial data. The private network and separate databases limit the blast radius but don't remove it.
-Mitigations: one deploy key per repo, `ALLOW_REGISTRATION=false`, off-droplet backups, and, if the data is sensitive
-enough, a separate droplet. Registration is closed by default: the first `.env` sets `ALLOW_REGISTRATION=false`, which
+Mitigations: one deploy key per repo, `REGISTRATION_MODE=closed`, off-droplet backups, and, if the data is sensitive
+enough, a separate droplet. Registration is closed by default: the first `.env` sets `REGISTRATION_MODE=closed`, which
 still lets the first account be created and refuses every later one. **Create your account right after the first deploy.**
 
 ## One-time setup
@@ -75,6 +75,8 @@ still lets the first account be created and refuses every later one. **Create yo
    | Secret | `DROPLET_SSH_KEY` | the private key from step 3 |
    | Secret | `DROPLET_KNOWN_HOSTS` | output of `ssh-keyscan -t ed25519 <droplet-ip>` (verify the fingerprint) |
    | Secret | `DROPLET_SSH_PORT` | optional, default 22 |
+   | Secret | `REGISTRATION_MODE` | optional: `open`, `invite` or `closed`; defaults to `closed` when unset |
+   | Secret | `REGISTRATION_INVITE_CODE` | required (8+ characters) when the mode is `invite` |
 
    No domain variable is needed: the hostname belongs to the proxy.
 5. **`production` environment (recommended):** Settings, Environments, New environment. Add yourself as a required
@@ -141,7 +143,9 @@ docker network inspect proxy --format '{{range .Containers}}{{.Name}} {{end}}'  
 proxy-site list
 ```
 
-Need a second user? Set `ALLOW_REGISTRATION=true` in `.env`, `docker compose up -d`, register them, then set it back.
+Need a second user? Set the `REGISTRATION_MODE` secret to `invite` and `REGISTRATION_INVITE_CODE` to a long random string
+(`openssl rand -hex 16`), redeploy, give them the code, then set the mode back to `closed` and redeploy. Wrong codes are
+limited to 5 per address and 50 overall per 15 minutes, then the API returns 429.
 
 ## Troubleshooting
 
@@ -162,7 +166,8 @@ Need a second user? Set `ALLOW_REGISTRATION=true` in `.env`, `docker compose up 
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `POSTGRES_PASSWORD` | `evergreen` (local only) | Database password; generated on the first deploy. |
-| `ALLOW_REGISTRATION` | `true` (`false` in the droplet `.env`) | `false` locks sign-ups after the first account. |
+| `REGISTRATION_MODE` | `open` locally; `closed` in CI when the secret is unset | `open`, `invite` (needs the code) or `closed`. The first account on an empty server is always allowed. CI applies the secret of the same name on every deploy. |
+| `REGISTRATION_INVITE_CODE` | none | Site-wide code for `invite` mode (8+ characters; CI secret of the same name). |
 | `COOKIE_SECURE` | `true` in production | Force the `Secure` flag on the session cookie. |
 | `COOKIE_PATH` | `/` (`/evergreen` in production) | Session cookie path. |
 | `BASE_PATH` | `/` | Build arg: public path of the SPA (CI uses `/evergreen/`). |

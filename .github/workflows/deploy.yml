@@ -164,8 +164,11 @@ jobs:
         env:
           REGISTRY: ${{ needs.images.outputs.registry }}
           TAG: ${{ github.sha }}
+          # open | invite | closed (defaults to closed if the secret is unset).
+          REGISTRATION_MODE: ${{ secrets.REGISTRATION_MODE }}
+          REGISTRATION_INVITE_CODE: ${{ secrets.REGISTRATION_INVITE_CODE }}
         run: |
-          ssh droplet "REGISTRY='$REGISTRY' TAG='$TAG' bash -s" <<'REMOTE'
+          ssh droplet "REGISTRY='$REGISTRY' TAG='$TAG' REGISTRATION_MODE='${REGISTRATION_MODE:-closed}' REGISTRATION_INVITE_CODE='${REGISTRATION_INVITE_CODE}' bash -s" <<'REMOTE'
           set -euo pipefail
           cd /opt/evergreen
           # First deploy only: create .env with a random database password. Never overwritten afterwards,
@@ -174,8 +177,6 @@ jobs:
             umask 077
             {
               printf 'POSTGRES_PASSWORD=%s\n' "$(head -c 48 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)"
-              # sign-ups lock once the first account exists (the first account can always be created)
-              echo 'ALLOW_REGISTRATION=false'
               # pin the project (so the data volume is always evergreen_pgdata) and the layered files,
               # so manual `docker compose ...`, backup.sh and restore.sh behave like the deploy
               echo 'COMPOSE_PROJECT_NAME=evergreen'
@@ -192,6 +193,7 @@ jobs:
           # Remember what is running so manual compose commands use the same images.
           set_env REGISTRY "$REGISTRY"
           set_env TAG "$TAG"
+          export REGISTRATION_MODE REGISTRATION_INVITE_CODE   # not stored in .env; re-applied from the secrets each deploy
           docker compose pull api web
           docker compose up -d --no-build --remove-orphans
           echo "waiting for the API to report healthy..."

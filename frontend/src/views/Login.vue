@@ -12,12 +12,18 @@ const email = ref('')
 const password = ref('')
 const confirm = ref('')
 const registrationOpen = ref(true)
+const inviteRequired = ref(false)
+const inviteCode = ref('')
 const busy = ref(false)
 const error = ref('')
 
 // A server can close sign-ups once its owner has registered; hide the tab then.
 onMounted(async () => {
-  try { registrationOpen.value = (await api.config()).registration_open } catch { /* assume open */ }
+  try {
+    const cfg = await api.config()
+    registrationOpen.value = cfg.registration !== 'closed'
+    inviteRequired.value = cfg.registration === 'invite'
+  } catch { /* assume open */ }
   if (!registrationOpen.value) mode.value = 'login'
 })
 
@@ -27,7 +33,7 @@ async function submit() {
   busy.value = true
   try {
     resetData()
-    state.user = mode.value === 'login' ? await api.login(email.value, password.value) : await api.register(email.value, password.value)
+    state.user = mode.value === 'login' ? await api.login(email.value, password.value) : await api.register(email.value, password.value, inviteRequired.value ? inviteCode.value : undefined)
     router.push((route.query.next as string) || '/')
   } catch (e) {
     error.value = errMsg(e)
@@ -63,6 +69,7 @@ async function submit() {
         <label class="field"><span>Email</span><input v-model.trim="email" class="input" type="email" inputmode="email" autocomplete="email" placeholder="you@example.com" required maxlength="254" autofocus /></label>
         <PasswordField v-model="password" label="Password" :autocomplete="mode === 'login' ? 'current-password' : 'new-password'" :minlength="8" :maxlength="72" />
         <PasswordField v-if="mode === 'register'" v-model="confirm" label="Confirm password" autocomplete="new-password" :minlength="8" :maxlength="72" />
+        <label v-if="mode === 'register' && inviteRequired" class="field"><span>Registration code</span><input v-model.trim="inviteCode" class="input" autocomplete="off" spellcheck="false" required maxlength="128" /></label>
         <p v-if="mode === 'register'" class="small faint">At least 8 characters. Your data never leaves this machine.</p>
         <p v-if="error" class="err" role="alert">{{ error }}</p>
         <button class="btn accent" :disabled="busy" style="height: 48px">

@@ -30,8 +30,10 @@ services:
     environment:
       # Point this at any Postgres (e.g. a DigitalOcean Managed Database) to use that instead.
       DATABASE_URL: ${DATABASE_URL:-postgres://evergreen:${POSTGRES_PASSWORD:-evergreen}@db:5432/evergreen?sslmode=disable}
-      # "false" locks sign-ups once the first account exists
-      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-true}
+      # open | invite | closed. "invite" requires REGISTRATION_INVITE_CODE (8+ chars).
+      # The first account on an empty server is always allowed.
+      REGISTRATION_MODE: ${REGISTRATION_MODE:-open}
+      REGISTRATION_INVITE_CODE: ${REGISTRATION_INVITE_CODE:-}
     depends_on:
       db:
         condition: service_healthy

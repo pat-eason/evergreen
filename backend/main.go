@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -32,17 +31,23 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	cfg := api.Config{
+		CookieSecure:     env("COOKIE_SECURE", "") == "true",
+		CookiePath:       env("COOKIE_PATH", "/"),
+		RegistrationMode: os.Getenv("REGISTRATION_MODE"),
+		RegistrationCode: os.Getenv("REGISTRATION_INVITE_CODE"),
+	}
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
+	}
+
 	st, err := store.Open(ctx, dbURL)
 	if err != nil {
 		log.Fatalf("open database: %v", err)
 	}
 	defer st.Close()
 
-	srv := api.New(st, api.Config{
-		CookieSecure:       env("COOKIE_SECURE", "") == "true",
-		CookiePath:         env("COOKIE_PATH", "/"),
-		RegistrationClosed: strings.EqualFold(env("ALLOW_REGISTRATION", "true"), "false"),
-	})
+	srv := api.New(st, cfg)
 	srv.StartJanitor(ctx)
 
 	hs := &http.Server{

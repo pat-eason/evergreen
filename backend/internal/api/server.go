@@ -3,6 +3,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -35,8 +37,38 @@ type Config struct {
 	// CookiePath scopes the session cookie (default "/"). Under a shared origin use the app's
 	// prefix, e.g. "/evergreen", so other apps on the host never receive it.
 	CookiePath string
-	// RegistrationClosed stops new sign-ups once the first account exists.
-	RegistrationClosed bool
+	// RegistrationMode is who may create accounts: RegOpen, RegInvite or RegClosed.
+	// The very first account on an empty server is always allowed, so an install can be bootstrapped.
+	RegistrationMode string
+	// RegistrationCode is the site-wide code required to register in RegInvite mode.
+	RegistrationCode string
+}
+
+// Registration modes.
+const (
+	RegOpen   = "open"   // anyone can register
+	RegInvite = "invite" // registering requires the invite code
+	RegClosed = "closed" // nobody can register (after the first account)
+)
+
+// minRegistrationCode is the shortest registration code accepted at startup.
+const minRegistrationCode = 8
+
+// Validate normalizes the registration settings and rejects unsafe combinations.
+func (c *Config) Validate() error {
+	c.RegistrationMode = strings.ToLower(strings.TrimSpace(c.RegistrationMode))
+	switch c.RegistrationMode {
+	case "":
+		c.RegistrationMode = RegOpen
+	case RegOpen, RegInvite, RegClosed:
+	default:
+		return errors.New("REGISTRATION_MODE must be open, invite or closed")
+	}
+	c.RegistrationCode = strings.TrimSpace(c.RegistrationCode)
+	if c.RegistrationMode == RegInvite && len(c.RegistrationCode) < minRegistrationCode {
+		return errors.New("REGISTRATION_MODE=invite requires REGISTRATION_INVITE_CODE of at least 8 characters")
+	}
+	return nil
 }
 
 // Server is the API handler.
@@ -45,8 +77,9 @@ type Server struct {
 	cfg Config
 	mux *http.ServeMux
 
-	mu       sync.Mutex
-	failures map[string]*failure
+	mu        sync.Mutex
+	failures  map[string]*failure
+	codeGuard *guard
 }
 
 type failure struct {
@@ -58,7 +91,7 @@ type ctxKey struct{}
 
 // New builds the API server.
 func New(st *store.Store, cfg Config) *Server {
-	s := &Server{st: st, cfg: cfg, mux: http.NewServeMux(), failures: map[string]*failure{}}
+	s := &Server{st: st, cfg: cfg, mux: http.NewServeMux(), failures: map[string]*failure{}, codeGuard: newGuard(15*time.Minute, 5, 50)}
 	s.routes()
 	return s
 }
@@ -225,30 +258,57 @@ func clientIP(r *http.Request) string {
 	return host
 }
 
-// registrationOpen reports whether new accounts can be created: always when
-// open, otherwise only while no account exists yet (to bootstrap the install).
-func (s *Server) registrationOpen(r *http.Request) (bool, error) {
-	if !s.cfg.RegistrationClosed {
-		return true, nil
+// registrationMode is the mode in force right now: the configured one, except
+// that an empty server always accepts its first account without a code.
+func (s *Server) registrationMode(r *http.Request) (string, error) {
+	mode := s.cfg.RegistrationMode
+	if mode == "" || mode == RegOpen {
+		return RegOpen, nil
 	}
 	n, err := s.st.CountUsers(r.Context())
-	return n == 0, err
+	if err != nil {
+		return "", err
+	}
+	if n == 0 {
+		return RegOpen, nil
+	}
+	return mode, nil
 }
 
 func (s *Server) publicConfig(w http.ResponseWriter, r *http.Request) {
-	open, err := s.registrationOpen(r)
+	mode, err := s.registrationMode(r)
 	if err != nil {
 		serverErr(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]bool{"registration_open": open})
+	writeJSON(w, 200, map[string]string{"registration": mode})
+}
+
+// checkRegistrationCode enforces invite-only mode: a constant-time comparison behind a per-IP lockout
+// and a global failure ceiling (5 per address and 50 overall per 15 minutes, then 429).
+func (s *Server) checkRegistrationCode(w http.ResponseWriter, r *http.Request, given string) bool {
+	ip := clientIP(r)
+	if ok, wait := s.codeGuard.allowed(ip); !ok {
+		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
+		writeErr(w, http.StatusTooManyRequests, "too many attempts, try again later")
+		return false
+	}
+	a := sha256.Sum256([]byte(strings.TrimSpace(given)))
+	b := sha256.Sum256([]byte(s.cfg.RegistrationCode))
+	if subtle.ConstantTimeCompare(a[:], b[:]) != 1 {
+		s.codeGuard.fail(ip)
+		writeErr(w, http.StatusForbidden, "that registration code isn't valid")
+		return false
+	}
+	return true
 }
 
 // ---------- auth ----------
 
 type credentials struct {
-	Email    string `json:"email"`
-	Password string `json:"password"`
+	Email            string `json:"email"`
+	Password         string `json:"password"`
+	RegistrationCode string `json:"registration_code,omitempty"`
 }
 
 // normalizeEmail trims and lower-cases an address and reports whether it is a
@@ -271,17 +331,20 @@ func normalizeEmail(s string) (string, bool) {
 }
 
 func (s *Server) register(w http.ResponseWriter, r *http.Request) {
-	open, err := s.registrationOpen(r)
+	mode, err := s.registrationMode(r)
 	if err != nil {
 		serverErr(w, err)
 		return
 	}
-	if !open {
+	if mode == RegClosed {
 		writeErr(w, http.StatusForbidden, "registration is closed on this server")
 		return
 	}
 	var c credentials
 	if !readJSON(w, r, &c) {
+		return
+	}
+	if mode == RegInvite && !s.checkRegistrationCode(w, r, c.RegistrationCode) {
 		return
 	}
 	email, ok := normalizeEmail(c.Email)

@@ -478,18 +478,18 @@ func newServerWith(t *testing.T, cfg Config) http.Handler {
 }
 
 func TestClosedRegistrationAllowsOnlyTheFirstAccount(t *testing.T) {
-	srv := newServerWith(t, Config{RegistrationClosed: true})
+	srv := newServerWith(t, Config{RegistrationMode: RegClosed})
 	c := &client{t: t, srv: srv}
 
 	_, cfg := c.do("GET", "/api/config", nil)
-	if cfg["registration_open"] != true {
+	if cfg["registration"] != "open" {
 		t.Fatalf("a fresh install must allow bootstrap sign-up: %v", cfg)
 	}
 	if w, _ := c.do("POST", "/api/auth/register", map[string]string{"email": "owner@example.com", "password": "correct horse"}); w.Code != 200 {
 		t.Fatalf("first account: %d", w.Code)
 	}
 	_, cfg = c.do("GET", "/api/config", nil)
-	if cfg["registration_open"] != false {
+	if cfg["registration"] != "closed" {
 		t.Fatalf("registration should lock after the first account: %v", cfg)
 	}
 	other := &client{t: t, srv: srv}
@@ -508,7 +508,7 @@ func TestOpenRegistrationByDefault(t *testing.T) {
 		login(t, srv, n)
 	}
 	_, cfg := (&client{t: t, srv: srv}).do("GET", "/api/config", nil)
-	if cfg["registration_open"] != true {
+	if cfg["registration"] != "open" {
 		t.Fatalf("default config: %v", cfg)
 	}
 }
@@ -636,5 +636,65 @@ func TestHistoryAndLedgerDateRanges(t *testing.T) {
 		if w, _ := a.do("GET", "/api/ledger"+bad, nil); w.Code != 400 {
 			t.Fatalf("ledger%s should be rejected, got %d", bad, w.Code)
 		}
+	}
+}
+
+func TestInviteRegistration(t *testing.T) {
+	const code = "correct-horse-battery"
+	cfg := Config{RegistrationMode: RegInvite, RegistrationCode: code}
+	if err := cfg.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	srv := newServerWith(t, cfg)
+	reg := func(c *client, email, invite string) int {
+		w, _ := c.do("POST", "/api/auth/register", map[string]string{"email": email, "password": "correct horse", "registration_code": invite})
+		return w.Code
+	}
+	c := &client{t: t, srv: srv}
+	// an empty server accepts its first account without a code
+	if got := reg(c, "owner@example.com", ""); got != 200 {
+		t.Fatalf("bootstrap: %d", got)
+	}
+	_, pub := c.do("GET", "/api/config", nil)
+	if pub["registration"] != "invite" {
+		t.Fatalf("config: %v", pub)
+	}
+	guest := &client{t: t, srv: srv}
+	if got := reg(guest, "a@example.com", ""); got != 403 {
+		t.Fatalf("missing code: %d", got)
+	}
+	if got := reg(guest, "a@example.com", "wrong"); got != 403 {
+		t.Fatalf("wrong code: %d", got)
+	}
+	if got := reg(guest, "a@example.com", code); got != 200 {
+		t.Fatalf("right code: %d", got)
+	}
+}
+
+func TestInviteGuessingIsThrottled(t *testing.T) {
+	cfg := Config{RegistrationMode: RegInvite, RegistrationCode: "correct-horse-battery"}
+	srv := newServerWith(t, cfg)
+	(&client{t: t, srv: srv}).do("POST", "/api/auth/register", map[string]string{"email": "owner@example.com", "password": "correct horse"})
+	c := &client{t: t, srv: srv}
+	for i := 0; i < 5; i++ {
+		if w, _ := c.do("POST", "/api/auth/register", map[string]string{"email": "x@example.com", "password": "correct horse", "registration_code": "guess"}); w.Code != 403 {
+			t.Fatalf("guess %d: %d", i, w.Code)
+		}
+	}
+	// locked out: even the right code is refused until the backoff ends
+	if w, _ := c.do("POST", "/api/auth/register", map[string]string{"email": "x@example.com", "password": "correct horse", "registration_code": "correct-horse-battery"}); w.Code != 429 {
+		t.Fatalf("lockout: %d", w.Code)
+	}
+}
+
+func TestConfigValidate(t *testing.T) {
+	for _, c := range []Config{{RegistrationMode: "nope"}, {RegistrationMode: RegInvite}, {RegistrationMode: RegInvite, RegistrationCode: "short"}} {
+		if c.Validate() == nil {
+			t.Fatalf("expected error for %+v", c)
+		}
+	}
+	c := Config{}
+	if err := c.Validate(); err != nil || c.RegistrationMode != RegOpen {
+		t.Fatalf("default: %v %q", err, c.RegistrationMode)
 	}
 }
