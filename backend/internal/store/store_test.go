@@ -118,7 +118,7 @@ func TestJSONColumnsRoundTrip(t *testing.T) {
 	}
 
 	a, err := st.CreateAccount(ctx, u.ID, sim.Account{Name: "IRA", Category: "investment", Owner: "self", Config: sim.AccountConfig{Balance: 1234.56, TaxTreatment: "tax_free", ExpectedReturn: 0.07}})
-	if err != nil || a.ID == 0 {
+	if err != nil || a.ID == "" {
 		t.Fatalf("create account: %v %+v", err, a)
 	}
 	back, err := st.GetAccount(ctx, u.ID, a.ID)
@@ -150,7 +150,7 @@ func TestLedgerIsOrderedByTimeNotInsertion(t *testing.T) {
 	u := newUser(t, st, "a@example.com")
 	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	add := func(at time.Time, bal float64) {
-		if _, err := st.AddLedger(ctx, u.ID, ledger.Entry{AccountID: 7, AccountName: "X", Category: "cash", Owner: "self", Kind: ledger.KindUpdated, Reason: ledger.ReasonValue, Balance: bal, OccurredAt: at}); err != nil {
+		if _, err := st.AddLedger(ctx, u.ID, ledger.Entry{AccountID: acct7, AccountName: "X", Category: "cash", Owner: "self", Kind: ledger.KindUpdated, Reason: ledger.ReasonValue, Balance: bal, OccurredAt: at}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -159,7 +159,7 @@ func TestLedgerIsOrderedByTimeNotInsertion(t *testing.T) {
 	add(base, 1)
 	add(base.Add(500*time.Millisecond), 2)
 
-	es, err := st.ListLedger(ctx, u.ID, 0)
+	es, err := st.ListLedger(ctx, u.ID, "")
 	if err != nil || len(es) != 3 {
 		t.Fatalf("list: %v %v", err, es)
 	}
@@ -169,11 +169,11 @@ func TestLedgerIsOrderedByTimeNotInsertion(t *testing.T) {
 	if !es[1].OccurredAt.Equal(base.Add(500 * time.Millisecond)) {
 		t.Fatalf("sub-second precision lost: %v", es[1].OccurredAt)
 	}
-	latest, ok, err := st.LatestLedgerTime(ctx, u.ID, 7)
+	latest, ok, err := st.LatestLedgerTime(ctx, u.ID, acct7)
 	if err != nil || !ok || !latest.Equal(base.Add(48*time.Hour)) {
 		t.Fatalf("latest: %v %v %v", latest, ok, err)
 	}
-	if _, ok, _ := st.LatestLedgerTime(ctx, u.ID, 999); ok {
+	if _, ok, _ := st.LatestLedgerTime(ctx, u.ID, "00000000-0000-4000-8000-000000000999"); ok {
 		t.Fatal("an account with no entries has no latest time")
 	}
 }
@@ -232,7 +232,7 @@ func TestDeleteMemberReassignsOwnership(t *testing.T) {
 	st := storetest.New(t)
 	u := newUser(t, st, "a@example.com")
 	m, _ := st.CreateMember(ctx, u.ID, store.Member{FirstName: "Rachel", Relationship: "spouse", BirthYear: 1990})
-	key := itoa(m.ID)
+	key := m.ID
 	_, _ = st.CreateAccount(ctx, u.ID, sim.Account{Name: "IRA", Category: "cash", Owner: key, Config: sim.AccountConfig{Balance: 1}})
 	_, _ = st.CreateEvent(ctx, u.ID, sim.Event{Kind: "income", Type: "pension", Name: "P", Owner: key, StartAge: 65, AnnualAmount: 1})
 
@@ -247,14 +247,4 @@ func TestDeleteMemberReassignsOwnership(t *testing.T) {
 	}
 }
 
-func itoa(i int64) string {
-	const digits = "0123456789"
-	if i == 0 {
-		return "0"
-	}
-	var b []byte
-	for ; i > 0; i /= 10 {
-		b = append([]byte{digits[i%10]}, b...)
-	}
-	return string(b)
-}
+const acct7 = "00000000-0000-4000-8000-000000000007"

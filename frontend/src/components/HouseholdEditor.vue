@@ -11,7 +11,7 @@ const rels: { id: Member['relationship']; label: string }[] = [
 ]
 const label = (id: string) => rels.find((r) => r.id === id)?.label ?? id
 
-const editing = ref<number | 'new' | null>(null)
+const editing = ref<string | 'new' | null>(null)
 const form = reactive<Omit<Member, 'id'>>({ first_name: '', last_name: '', relationship: 'spouse', age: 0 })
 const busy = ref(false)
 const error = ref('')
@@ -30,7 +30,7 @@ async function save() {
   try {
     if (editing.value === 'new') state.members.push(await api.createMember({ ...form }))
     else {
-      const saved = await api.updateMember({ ...form, id: editing.value as number })
+      const saved = await api.updateMember({ ...form, id: editing.value as string })
       const i = state.members.findIndex((m) => m.id === saved.id)
       if (i >= 0) state.members[i] = saved
     }

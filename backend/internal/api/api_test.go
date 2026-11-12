@@ -108,7 +108,7 @@ func TestDataAndIsolation(t *testing.T) {
 	if w.Code != 201 {
 		t.Fatalf("create account: %d %v", w.Code, acc)
 	}
-	id := int(acc["id"].(float64))
+	id := acc["id"].(string)
 	if cfg := acc["config"].(map[string]any); cfg["apr"] != nil {
 		t.Fatalf("irrelevant field kept: %v", cfg)
 	}
@@ -116,10 +116,10 @@ func TestDataAndIsolation(t *testing.T) {
 		t.Fatalf("bad category: %d", w.Code)
 	}
 	// bob cannot touch alice's account
-	if w, _ := b.do("PUT", "/api/accounts/"+itoa(id), map[string]any{"name": "hax", "category": "cash", "config": map[string]any{}}); w.Code != 404 {
+	if w, _ := b.do("PUT", "/api/accounts/"+id, map[string]any{"name": "hax", "category": "cash", "config": map[string]any{}}); w.Code != 404 {
 		t.Fatalf("cross-user update: %d", w.Code)
 	}
-	if w, _ := b.do("DELETE", "/api/accounts/"+itoa(id), nil); w.Code != 404 {
+	if w, _ := b.do("DELETE", "/api/accounts/"+id, nil); w.Code != 404 {
 		t.Fatalf("cross-user delete: %d", w.Code)
 	}
 
@@ -266,7 +266,7 @@ func TestHouseholdAndOwnership(t *testing.T) {
 	if w.Code != 201 || m["age"].(float64) != 30 {
 		t.Fatalf("create member: %d %v", w.Code, m)
 	}
-	mid := itoa(int(m["id"].(float64)))
+	mid := m["id"].(string)
 	if w, _ := b.do("PUT", "/api/members/"+mid, map[string]any{"first_name": "Hax", "age": 5}); w.Code != 404 {
 		t.Fatalf("cross-user member update: %d", w.Code)
 	}
@@ -357,8 +357,8 @@ func TestLedgerRecordsAccountChanges(t *testing.T) {
 	if w.Code != 201 {
 		t.Fatalf("create: %d", w.Code)
 	}
-	id := int(acc["id"].(float64))
-	path := "/api/accounts/" + itoa(id)
+	id := acc["id"].(string)
+	path := "/api/accounts/" + id
 
 	es := ledgerEntries(t, a, "")
 	if len(es) != 1 || es[0]["kind"] != "created" || es[0]["balance"].(float64) != 10000 {
@@ -430,7 +430,7 @@ func TestLedgerRecordsAccountChanges(t *testing.T) {
 	if first := pts[0].(map[string]any); first["net_worth"].(float64) != 9000 {
 		t.Fatalf("history should start at the backfilled value: %v", first)
 	}
-	if _, ok := h["series"].(map[string]any)[itoa(id)]; !ok {
+	if _, ok := h["series"].(map[string]any)[id]; !ok {
 		t.Fatalf("per-account series missing: %v", h["series"])
 	}
 
@@ -446,7 +446,7 @@ func TestLedgerRecordsAccountChanges(t *testing.T) {
 	if w, _ := a.do("DELETE", path, nil); w.Code != 204 {
 		t.Fatalf("delete: %d", w.Code)
 	}
-	es = ledgerEntries(t, a, "?account_id="+itoa(id))
+	es = ledgerEntries(t, a, "?account_id="+id)
 	if es[0]["kind"] != "deleted" || es[0]["balance"].(float64) != 0 || es[0]["account_name"] != "Main brokerage" {
 		t.Fatalf("after delete: %v", es[0])
 	}
@@ -461,7 +461,7 @@ func TestLedgerMortgageTracksHomeValue(t *testing.T) {
 	srv := newServer(t)
 	a := login(t, srv, "alice")
 	_, acc := a.do("POST", "/api/accounts", map[string]any{"name": "Home", "category": "mortgage", "config": map[string]any{"balance": 300000, "home_value": 450000, "interest_rate": 0.04}})
-	id := itoa(int(acc["id"].(float64)))
+	id := acc["id"].(string)
 	if w, _ := a.do("POST", "/api/accounts/"+id+"/value", map[string]any{"balance": 298000, "home_value": 460000, "reason": "payment"}); w.Code != 200 {
 		t.Fatalf("mortgage value: %d", w.Code)
 	}
@@ -591,7 +591,7 @@ func TestHistoryAndLedgerDateRanges(t *testing.T) {
 	srv := newServer(t)
 	a := login(t, srv, "alice")
 	_, acc := a.do("POST", "/api/accounts", map[string]any{"name": "IRA", "category": "investment", "config": map[string]any{"balance": 1000, "tax_treatment": "tax_free"}})
-	path := "/api/accounts/" + itoa(int(acc["id"].(float64))) + "/value"
+	path := "/api/accounts/" + acc["id"].(string) + "/value"
 	rec := func(date string, bal float64) {
 		if w, out := a.do("POST", path, map[string]any{"balance": bal, "as_of": date}); w.Code != 200 {
 			t.Fatalf("record %s: %d %v", date, w.Code, out)

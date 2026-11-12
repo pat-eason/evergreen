@@ -11,6 +11,7 @@ import (
 
 	"github.com/patrickeason/financial-wellness/backend/internal/ledger"
 	"github.com/patrickeason/financial-wellness/backend/internal/sim"
+	"github.com/patrickeason/financial-wellness/backend/internal/store"
 )
 
 // ledgerEntry builds a ledger row describing an account at a moment in time.
@@ -30,15 +31,15 @@ func ledgerEntry(a sim.Account, kind, reason, note string, at time.Time) ledger.
 
 // record appends to the ledger. A failure is logged rather than failing the
 // user's change: the account write has already happened.
-func (s *Server) record(r *http.Request, uid int64, e ledger.Entry) {
+func (s *Server) record(r *http.Request, uid string, e ledger.Entry) {
 	if _, err := s.st.AddLedger(r.Context(), uid, e); err != nil {
-		log.Printf("ledger write failed (account %d, %s): %v", e.AccountID, e.Kind, err)
+		log.Printf("ledger write failed (account %s, %s): %v", e.AccountID, e.Kind, err)
 	}
 }
 
 // recordUpdate logs the right kind of entry for an account edit: a balance
 // change, a settings-only edit, or nothing when nothing changed.
-func (s *Server) recordUpdate(r *http.Request, uid int64, before, after sim.Account) {
+func (s *Server) recordUpdate(r *http.Request, uid string, before, after sim.Account) {
 	switch {
 	case before.Config.Balance != after.Config.Balance ||
 		(after.Category == sim.CatMortgage && before.Config.HomeValue != after.Config.HomeValue):
@@ -189,7 +190,11 @@ func (s *Server) listLedger(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, bad)
 		return
 	}
-	accountID, _ := strconv.ParseInt(q.Get("account_id"), 10, 64)
+	accountID := q.Get("account_id")
+	if accountID != "" && !store.ValidID(accountID) {
+		writeErr(w, http.StatusBadRequest, "invalid account_id")
+		return
+	}
 	limit, _ := strconv.Atoi(q.Get("limit"))
 	offset, _ := strconv.Atoi(q.Get("offset"))
 	if limit <= 0 || limit > 500 {
@@ -198,7 +203,7 @@ func (s *Server) listLedger(w http.ResponseWriter, r *http.Request) {
 	if offset < 0 {
 		offset = 0
 	}
-	all, err := s.st.ListLedger(r.Context(), u.ID, 0)
+	all, err := s.st.ListLedger(r.Context(), u.ID, "")
 	if err != nil {
 		serverErr(w, err)
 		return
@@ -208,7 +213,7 @@ func (s *Server) listLedger(w http.ResponseWriter, r *http.Request) {
 	filtered := make([]ledger.Entry, 0, len(annotated))
 	for i := len(annotated) - 1; i >= 0; i-- { // newest first
 		e := annotated[i]
-		if accountID != 0 && e.AccountID != accountID {
+		if accountID != "" && e.AccountID != accountID {
 			continue
 		}
 		if !dr.from.IsZero() && e.OccurredAt.Before(dr.from) {
@@ -238,13 +243,17 @@ func (s *Server) ledgerHistory(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, bad)
 		return
 	}
-	accountID, _ := strconv.ParseInt(q.Get("account_id"), 10, 64)
+	accountID := q.Get("account_id")
+	if accountID != "" && !store.ValidID(accountID) {
+		writeErr(w, http.StatusBadRequest, "invalid account_id")
+		return
+	}
 	months, _ := strconv.Atoi(q.Get("months"))
 	opt := ledger.Options{Now: time.Now(), Interval: q.Get("interval"), AccountID: accountID, ByAccount: q.Get("by_account") == "1", From: dr.from, To: dr.to}
 	if months > 0 && months <= 600 && dr.from.IsZero() {
 		opt.From = opt.Now.AddDate(0, -months, 0)
 	}
-	all, err := s.st.ListLedger(r.Context(), u.ID, 0)
+	all, err := s.st.ListLedger(r.Context(), u.ID, "")
 	if err != nil {
 		serverErr(w, err)
 		return

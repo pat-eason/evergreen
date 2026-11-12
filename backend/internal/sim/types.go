@@ -171,7 +171,7 @@ type AccountConfig struct {
 
 // Account is a user-recorded financial account.
 type Account struct {
-	ID       int64         `json:"id"`
+	ID       string        `json:"id"`
 	Owner    string        `json:"owner"` // "self", "joint", or a household member id
 	Name     string        `json:"name"`
 	Category string        `json:"category"`
@@ -184,7 +184,7 @@ func (a Account) IsAsset() bool { return a.Category == CatCash || a.Category == 
 // Event is an income event (Social Security, pension, side income...) or a
 // spending goal (health care, travel, a car...) that starts at a given age.
 type Event struct {
-	ID                int64   `json:"id"`
+	ID                string  `json:"id"`
 	Owner             string  `json:"owner"` // "self" or a household member id; StartAge is that person's age
 	Kind              string  `json:"kind"`  // income | spending
 	Type              string  `json:"type"`  // social_security, pension, part_time, rental, other / health, travel, home, other

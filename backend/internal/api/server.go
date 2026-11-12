@@ -492,7 +492,7 @@ func (s *Server) StartJanitor(ctx context.Context) {
 // checkPassword verifies the signed-in user's current password, applying the
 // same failure throttle as login.
 func (s *Server) checkPassword(w http.ResponseWriter, r *http.Request, u store.User, pw string) bool {
-	key := "uid:" + strconv.FormatInt(u.ID, 10)
+	key := "uid:" + u.ID
 	if wait, ok := s.throttled(key); ok {
 		w.Header().Set("Retry-After", strconv.Itoa(int(wait.Seconds())+1))
 		writeErr(w, http.StatusTooManyRequests, "too many failed attempts, try again shortly")

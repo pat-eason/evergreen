@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -146,6 +145,103 @@ CREATE TABLE calculations (
 );
 CREATE INDEX idx_calcs_user ON calculations(user_id, kind);
 `,
+	// 2: UUID primary keys. Converts every id (and the user_id / account_id /
+	// budget_id references, plus the member ids stored as text in the owner
+	// columns) from BIGINT identities to random UUIDs, keeping existing data.
+	`
+-- Old account ids -> new uuids. Includes ids that only survive in the ledger
+-- (deleted accounts) so their history stays grouped.
+CREATE TEMP TABLE account_map (old_id BIGINT PRIMARY KEY, new_id UUID NOT NULL DEFAULT gen_random_uuid()) ON COMMIT DROP;
+INSERT INTO account_map(old_id) SELECT id FROM accounts UNION SELECT account_id FROM ledger;
+
+-- Rows used to be ordered by their sequential id; keep that order explicitly.
+ALTER TABLE members ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp();
+UPDATE members SET created_at = now() + id * interval '1 microsecond';
+ALTER TABLE events ADD COLUMN created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp();
+UPDATE events SET created_at = now() + id * interval '1 microsecond';
+UPDATE accounts SET created_at = created_at + id * interval '1 microsecond';
+UPDATE calculations SET created_at = created_at + id * interval '1 microsecond';
+UPDATE ledger SET created_at = created_at + id * interval '1 microsecond';
+
+-- new ids
+ALTER TABLE users ADD COLUMN uid UUID NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE members ADD COLUMN uid UUID NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE events ADD COLUMN uid UUID NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE budgets ADD COLUMN uid UUID NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE budget_items ADD COLUMN uid UUID NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE calculations ADD COLUMN uid UUID NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE ledger ADD COLUMN uid UUID NOT NULL DEFAULT gen_random_uuid();
+ALTER TABLE accounts ADD COLUMN uid UUID;
+UPDATE accounts a SET uid = m.new_id FROM account_map m WHERE m.old_id = a.id;
+ALTER TABLE accounts ALTER COLUMN uid SET NOT NULL, ALTER COLUMN uid SET DEFAULT gen_random_uuid();
+
+-- text owner references: member id -> member uuid
+UPDATE accounts a SET owner = m.uid::text FROM members m WHERE m.user_id = a.user_id AND a.owner = m.id::text;
+UPDATE events e SET owner = m.uid::text FROM members m WHERE m.user_id = e.user_id AND e.owner = m.id::text;
+UPDATE ledger l SET owner = m.uid::text FROM members m WHERE m.user_id = l.user_id AND l.owner = m.id::text;
+
+-- budget item references
+ALTER TABLE budget_items ADD COLUMN budget_uuid UUID, ADD COLUMN account_uuid UUID;
+UPDATE budget_items i SET budget_uuid = b.uid FROM budgets b WHERE b.id = i.budget_id;
+UPDATE budget_items i SET account_uuid = m.new_id FROM account_map m WHERE m.old_id = i.account_id;
+ALTER TABLE budget_items DROP COLUMN budget_id, DROP COLUMN account_id;
+ALTER TABLE budget_items RENAME COLUMN budget_uuid TO budget_id;
+ALTER TABLE budget_items RENAME COLUMN account_uuid TO account_id;
+ALTER TABLE budget_items ALTER COLUMN budget_id SET NOT NULL;
+
+-- ledger.account_id (no foreign key: history outlives the account)
+ALTER TABLE ledger ADD COLUMN account_uuid UUID;
+UPDATE ledger l SET account_uuid = m.new_id FROM account_map m WHERE m.old_id = l.account_id;
+ALTER TABLE ledger DROP COLUMN account_id;
+ALTER TABLE ledger RENAME COLUMN account_uuid TO account_id;
+ALTER TABLE ledger ALTER COLUMN account_id SET NOT NULL;
+
+-- user_id references
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['sessions','profiles','members','accounts','ledger','events','budgets','calculations'] LOOP
+    EXECUTE format('ALTER TABLE %I ADD COLUMN user_uuid UUID', t);
+    EXECUTE format('UPDATE %I x SET user_uuid = u.uid FROM users u WHERE u.id = x.user_id', t);
+    EXECUTE format('ALTER TABLE %I DROP COLUMN user_id', t);
+    EXECUTE format('ALTER TABLE %I RENAME COLUMN user_uuid TO user_id', t);
+    EXECUTE format('ALTER TABLE %I ALTER COLUMN user_id SET NOT NULL', t);
+  END LOOP;
+END $$;
+
+-- swap primary keys (dropping the old column drops its key, and any foreign
+-- keys that pointed at it were dropped with the columns above)
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['users','members','accounts','events','budgets','budget_items','calculations','ledger'] LOOP
+    EXECUTE format('ALTER TABLE %I DROP COLUMN id', t);
+    EXECUTE format('ALTER TABLE %I RENAME COLUMN uid TO id', t);
+    EXECUTE format('ALTER TABLE %I ADD PRIMARY KEY (id)', t);
+  END LOOP;
+END $$;
+ALTER TABLE profiles ADD PRIMARY KEY (user_id);
+
+-- foreign keys and indexes
+ALTER TABLE sessions     ADD FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE profiles     ADD FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE members      ADD FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE accounts     ADD FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE ledger       ADD FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE events       ADD FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE budgets      ADD FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE calculations ADD FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE;
+ALTER TABLE budget_items ADD FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE CASCADE;
+ALTER TABLE budgets ADD UNIQUE (user_id, month);
+CREATE INDEX idx_sessions_user ON sessions(user_id);
+CREATE INDEX idx_members_user ON members(user_id);
+CREATE INDEX idx_accounts_user ON accounts(user_id);
+CREATE INDEX idx_ledger_user_time ON ledger(user_id, occurred_at);
+CREATE INDEX idx_ledger_account ON ledger(user_id, account_id);
+CREATE INDEX idx_events_user ON events(user_id);
+CREATE INDEX idx_budget_items_budget ON budget_items(budget_id);
+CREATE INDEX idx_calcs_user ON calculations(user_id, kind);
+`,
 }
 
 // migrationLock serialises migrators (several app instances, or tests) via a
@@ -258,7 +354,7 @@ func isUnique(err error) bool {
 // ---------- users & sessions ----------
 
 type User struct {
-	ID        int64     `json:"id"`
+	ID        string    `json:"id"`
 	Email     string    `json:"email"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -286,7 +382,7 @@ func (s *Store) UserByEmail(ctx context.Context, email string) (User, string, er
 }
 
 // UserHashByID returns a user's password hash.
-func (s *Store) UserHashByID(ctx context.Context, id int64) (string, error) {
+func (s *Store) UserHashByID(ctx context.Context, id string) (string, error) {
 	var h string
 	err := s.db.QueryRowContext(ctx, `SELECT password_hash FROM users WHERE id=$1`, id).Scan(&h)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -295,7 +391,7 @@ func (s *Store) UserHashByID(ctx context.Context, id int64) (string, error) {
 	return h, err
 }
 
-func (s *Store) SetEmail(ctx context.Context, id int64, email string) error {
+func (s *Store) SetEmail(ctx context.Context, id string, email string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE users SET email=$1 WHERE id=$2`, email, id)
 	if isUnique(err) {
 		return ErrConflict
@@ -304,7 +400,7 @@ func (s *Store) SetEmail(ctx context.Context, id int64, email string) error {
 }
 
 // SetPassword stores a new hash and signs out every session except keepToken.
-func (s *Store) SetPassword(ctx context.Context, id int64, hash, keepToken string) error {
+func (s *Store) SetPassword(ctx context.Context, id string, hash, keepToken string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -332,7 +428,7 @@ func hashToken(t string) string {
 }
 
 // CreateSession issues a new opaque session token (only its hash is stored).
-func (s *Store) CreateSession(ctx context.Context, userID int64, ttl time.Duration) (string, time.Time, error) {
+func (s *Store) CreateSession(ctx context.Context, userID string, ttl time.Duration) (string, time.Time, error) {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		return "", time.Time{}, err
@@ -372,7 +468,7 @@ func (s *Store) PurgeExpiredSessions(ctx context.Context) {
 
 // ---------- profile ----------
 
-func (s *Store) GetProfile(ctx context.Context, uid int64) (sim.Profile, bool, error) {
+func (s *Store) GetProfile(ctx context.Context, uid string) (sim.Profile, bool, error) {
 	var data string
 	err := s.db.QueryRowContext(ctx, `SELECT data::text FROM profiles WHERE user_id=$1`, uid).Scan(&data)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -389,7 +485,7 @@ func (s *Store) GetProfile(ctx context.Context, uid int64) (sim.Profile, bool, e
 	return p, true, nil
 }
 
-func (s *Store) SaveProfile(ctx context.Context, uid int64, p sim.Profile) error {
+func (s *Store) SaveProfile(ctx context.Context, uid string, p sim.Profile) error {
 	b, _ := json.Marshal(p)
 	_, err := s.db.ExecContext(ctx, `INSERT INTO profiles(user_id,data,updated_at) VALUES($1,$2::jsonb,now())
 		ON CONFLICT (user_id) DO UPDATE SET data=EXCLUDED.data, updated_at=EXCLUDED.updated_at`, uid, string(b))
@@ -398,8 +494,8 @@ func (s *Store) SaveProfile(ctx context.Context, uid int64, p sim.Profile) error
 
 // ---------- accounts ----------
 
-func (s *Store) ListAccounts(ctx context.Context, uid int64) ([]sim.Account, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,category,owner,config::text FROM accounts WHERE user_id=$1 ORDER BY id`, uid)
+func (s *Store) ListAccounts(ctx context.Context, uid string) ([]sim.Account, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,category,owner,config::text FROM accounts WHERE user_id=$1 ORDER BY created_at,id`, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -417,7 +513,7 @@ func (s *Store) ListAccounts(ctx context.Context, uid int64) ([]sim.Account, err
 	return out, rows.Err()
 }
 
-func (s *Store) GetAccount(ctx context.Context, uid, id int64) (sim.Account, error) {
+func (s *Store) GetAccount(ctx context.Context, uid, id string) (sim.Account, error) {
 	var a sim.Account
 	var cfg string
 	err := s.db.QueryRowContext(ctx, `SELECT id,name,category,owner,config::text FROM accounts WHERE id=$1 AND user_id=$2`, id, uid).Scan(&a.ID, &a.Name, &a.Category, &a.Owner, &cfg)
@@ -428,14 +524,14 @@ func (s *Store) GetAccount(ctx context.Context, uid, id int64) (sim.Account, err
 	return a, err
 }
 
-func (s *Store) CreateAccount(ctx context.Context, uid int64, a sim.Account) (sim.Account, error) {
+func (s *Store) CreateAccount(ctx context.Context, uid string, a sim.Account) (sim.Account, error) {
 	b, _ := json.Marshal(a.Config)
 	err := s.db.QueryRowContext(ctx, `INSERT INTO accounts(user_id,name,category,owner,config) VALUES($1,$2,$3,$4,$5::jsonb) RETURNING id`,
 		uid, a.Name, a.Category, a.Owner, string(b)).Scan(&a.ID)
 	return a, err
 }
 
-func (s *Store) UpdateAccount(ctx context.Context, uid int64, a sim.Account) error {
+func (s *Store) UpdateAccount(ctx context.Context, uid string, a sim.Account) error {
 	b, _ := json.Marshal(a.Config)
 	res, err := s.db.ExecContext(ctx, `UPDATE accounts SET name=$1,category=$2,owner=$3,config=$4::jsonb,updated_at=now() WHERE id=$5 AND user_id=$6`,
 		a.Name, a.Category, a.Owner, string(b), a.ID, uid)
@@ -448,7 +544,7 @@ func (s *Store) UpdateAccount(ctx context.Context, uid int64, a sim.Account) err
 	return nil
 }
 
-func (s *Store) DeleteAccount(ctx context.Context, uid, id int64) error {
+func (s *Store) DeleteAccount(ctx context.Context, uid, id string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM accounts WHERE id=$1 AND user_id=$2`, id, uid)
 	if err != nil {
 		return err
@@ -464,15 +560,15 @@ func (s *Store) DeleteAccount(ctx context.Context, uid, id int64) error {
 // ---------- household members ----------
 
 type Member struct {
-	ID           int64  `json:"id"`
+	ID           string `json:"id"`
 	FirstName    string `json:"first_name"`
 	LastName     string `json:"last_name"`
 	Relationship string `json:"relationship"`
 	BirthYear    int    `json:"birth_year"`
 }
 
-func (s *Store) ListMembers(ctx context.Context, uid int64) ([]Member, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,first_name,last_name,relationship,birth_year FROM members WHERE user_id=$1 ORDER BY id`, uid)
+func (s *Store) ListMembers(ctx context.Context, uid string) ([]Member, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,first_name,last_name,relationship,birth_year FROM members WHERE user_id=$1 ORDER BY created_at,id`, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -488,13 +584,13 @@ func (s *Store) ListMembers(ctx context.Context, uid int64) ([]Member, error) {
 	return out, rows.Err()
 }
 
-func (s *Store) CreateMember(ctx context.Context, uid int64, m Member) (Member, error) {
+func (s *Store) CreateMember(ctx context.Context, uid string, m Member) (Member, error) {
 	err := s.db.QueryRowContext(ctx, `INSERT INTO members(user_id,first_name,last_name,relationship,birth_year) VALUES($1,$2,$3,$4,$5) RETURNING id`,
 		uid, m.FirstName, m.LastName, m.Relationship, m.BirthYear).Scan(&m.ID)
 	return m, err
 }
 
-func (s *Store) UpdateMember(ctx context.Context, uid int64, m Member) error {
+func (s *Store) UpdateMember(ctx context.Context, uid string, m Member) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE members SET first_name=$1,last_name=$2,relationship=$3,birth_year=$4 WHERE id=$5 AND user_id=$6`,
 		m.FirstName, m.LastName, m.Relationship, m.BirthYear, m.ID, uid)
 	if err != nil {
@@ -508,7 +604,7 @@ func (s *Store) UpdateMember(ctx context.Context, uid int64, m Member) error {
 
 // DeleteMember removes a member; their accounts become joint and their events
 // fall back to the primary person's timeline.
-func (s *Store) DeleteMember(ctx context.Context, uid, id int64) error {
+func (s *Store) DeleteMember(ctx context.Context, uid, id string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -521,7 +617,7 @@ func (s *Store) DeleteMember(ctx context.Context, uid, id int64) error {
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	key := strconv.FormatInt(id, 10)
+	key := id
 	if _, err := tx.ExecContext(ctx, `UPDATE accounts SET owner='joint' WHERE user_id=$1 AND owner=$2`, uid, key); err != nil {
 		return err
 	}
@@ -533,8 +629,8 @@ func (s *Store) DeleteMember(ctx context.Context, uid, id int64) error {
 
 // ---------- events ----------
 
-func (s *Store) ListEvents(ctx context.Context, uid int64) ([]sim.Event, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,type,name,owner,start_age,years,annual_amount,inflation_adjusted,taxable FROM events WHERE user_id=$1 ORDER BY start_age,id`, uid)
+func (s *Store) ListEvents(ctx context.Context, uid string) ([]sim.Event, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id,kind,type,name,owner,start_age,years,annual_amount,inflation_adjusted,taxable FROM events WHERE user_id=$1 ORDER BY start_age,created_at,id`, uid)
 	if err != nil {
 		return nil, err
 	}
@@ -550,13 +646,13 @@ func (s *Store) ListEvents(ctx context.Context, uid int64) ([]sim.Event, error) 
 	return out, rows.Err()
 }
 
-func (s *Store) CreateEvent(ctx context.Context, uid int64, e sim.Event) (sim.Event, error) {
+func (s *Store) CreateEvent(ctx context.Context, uid string, e sim.Event) (sim.Event, error) {
 	err := s.db.QueryRowContext(ctx, `INSERT INTO events(user_id,kind,type,name,owner,start_age,years,annual_amount,inflation_adjusted,taxable) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
 		uid, e.Kind, e.Type, e.Name, e.Owner, e.StartAge, e.Years, e.AnnualAmount, e.InflationAdjusted, e.Taxable).Scan(&e.ID)
 	return e, err
 }
 
-func (s *Store) UpdateEvent(ctx context.Context, uid int64, e sim.Event) error {
+func (s *Store) UpdateEvent(ctx context.Context, uid string, e sim.Event) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE events SET kind=$1,type=$2,name=$3,owner=$4,start_age=$5,years=$6,annual_amount=$7,inflation_adjusted=$8,taxable=$9 WHERE id=$10 AND user_id=$11`,
 		e.Kind, e.Type, e.Name, e.Owner, e.StartAge, e.Years, e.AnnualAmount, e.InflationAdjusted, e.Taxable, e.ID, uid)
 	if err != nil {
@@ -568,7 +664,7 @@ func (s *Store) UpdateEvent(ctx context.Context, uid int64, e sim.Event) error {
 	return nil
 }
 
-func (s *Store) DeleteEvent(ctx context.Context, uid, id int64) error {
+func (s *Store) DeleteEvent(ctx context.Context, uid, id string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM events WHERE id=$1 AND user_id=$2`, id, uid)
 	if err != nil {
 		return err
@@ -582,13 +678,13 @@ func (s *Store) DeleteEvent(ctx context.Context, uid, id int64) error {
 // ---------- budgets ----------
 
 type BudgetItem struct {
-	ID         int64   `json:"id"`
+	ID         string  `json:"id"`
 	Section    string  `json:"section"` // income | savings | expense
 	Name       string  `json:"name"`
 	Expr       string  `json:"expr"`
 	Amount     float64 `json:"amount"`
 	GrowthRate float64 `json:"growth_rate"`
-	AccountID  *int64  `json:"account_id"`
+	AccountID  *string `json:"account_id"`
 }
 
 type Budget struct {
@@ -605,7 +701,7 @@ type BudgetMonth struct {
 	Expenses float64 `json:"expenses"`
 }
 
-func (s *Store) ListBudgetMonths(ctx context.Context, uid int64) ([]BudgetMonth, error) {
+func (s *Store) ListBudgetMonths(ctx context.Context, uid string) ([]BudgetMonth, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT b.month,
   COALESCE(SUM(CASE WHEN i.section='income' THEN i.amount END),0),
@@ -628,9 +724,9 @@ WHERE b.user_id=$1 GROUP BY b.id, b.month ORDER BY b.month DESC`, uid)
 	return out, rows.Err()
 }
 
-func (s *Store) GetBudget(ctx context.Context, uid int64, month string) (Budget, error) {
+func (s *Store) GetBudget(ctx context.Context, uid string, month string) (Budget, error) {
 	b := Budget{Month: month, Items: []BudgetItem{}}
-	var id int64
+	var id string
 	var updated time.Time
 	err := s.db.QueryRowContext(ctx, `SELECT id,notes,updated_at FROM budgets WHERE user_id=$1 AND month=$2`, uid, month).Scan(&id, &b.Notes, &updated)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -647,12 +743,12 @@ func (s *Store) GetBudget(ctx context.Context, uid int64, month string) (Budget,
 	defer rows.Close()
 	for rows.Next() {
 		var it BudgetItem
-		var acc sql.NullInt64
+		var acc sql.NullString
 		if err := rows.Scan(&it.ID, &it.Section, &it.Name, &it.Expr, &it.Amount, &it.GrowthRate, &acc); err != nil {
 			return b, err
 		}
 		if acc.Valid {
-			v := acc.Int64
+			v := acc.String
 			it.AccountID = &v
 		}
 		b.Items = append(b.Items, it)
@@ -661,13 +757,13 @@ func (s *Store) GetBudget(ctx context.Context, uid int64, month string) (Budget,
 }
 
 // SaveBudget replaces a month's budget atomically.
-func (s *Store) SaveBudget(ctx context.Context, uid int64, b Budget) error {
+func (s *Store) SaveBudget(ctx context.Context, uid string, b Budget) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	var id int64
+	var id string
 	err = tx.QueryRowContext(ctx, `SELECT id FROM budgets WHERE user_id=$1 AND month=$2 FOR UPDATE`, uid, b.Month).Scan(&id)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
@@ -702,7 +798,7 @@ func (s *Store) SaveBudget(ctx context.Context, uid int64, b Budget) error {
 	return tx.Commit()
 }
 
-func (s *Store) DeleteBudget(ctx context.Context, uid int64, month string) error {
+func (s *Store) DeleteBudget(ctx context.Context, uid string, month string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM budgets WHERE user_id=$1 AND month=$2`, uid, month)
 	if err != nil {
 		return err
@@ -716,7 +812,7 @@ func (s *Store) DeleteBudget(ctx context.Context, uid int64, month string) error
 // ---------- calculations (saved snapshots) ----------
 
 type Calculation struct {
-	ID        int64           `json:"id"`
+	ID        string          `json:"id"`
 	Kind      string          `json:"kind"`
 	Name      string          `json:"name"`
 	Inputs    json.RawMessage `json:"inputs"`
@@ -724,14 +820,14 @@ type Calculation struct {
 	CreatedAt string          `json:"created_at"`
 }
 
-func (s *Store) ListCalculations(ctx context.Context, uid int64, kind string) ([]Calculation, error) {
+func (s *Store) ListCalculations(ctx context.Context, uid string, kind string) ([]Calculation, error) {
 	q := `SELECT id,kind,name,inputs::text,result::text,created_at FROM calculations WHERE user_id=$1`
 	args := []any{uid}
 	if kind != "" {
 		q += ` AND kind=$2`
 		args = append(args, kind)
 	}
-	q += ` ORDER BY id DESC LIMIT 100`
+	q += ` ORDER BY created_at DESC, id LIMIT 100`
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -752,7 +848,7 @@ func (s *Store) ListCalculations(ctx context.Context, uid int64, kind string) ([
 	return out, rows.Err()
 }
 
-func (s *Store) CreateCalculation(ctx context.Context, uid int64, c Calculation) (Calculation, error) {
+func (s *Store) CreateCalculation(ctx context.Context, uid string, c Calculation) (Calculation, error) {
 	var at time.Time
 	err := s.db.QueryRowContext(ctx, `INSERT INTO calculations(user_id,kind,name,inputs,result) VALUES($1,$2,$3,$4::jsonb,$5::jsonb) RETURNING id, created_at`,
 		uid, c.Kind, c.Name, string(c.Inputs), string(c.Result)).Scan(&c.ID, &at)
@@ -760,7 +856,7 @@ func (s *Store) CreateCalculation(ctx context.Context, uid int64, c Calculation)
 	return c, err
 }
 
-func (s *Store) DeleteCalculation(ctx context.Context, uid, id int64) error {
+func (s *Store) DeleteCalculation(ctx context.Context, uid, id string) error {
 	res, err := s.db.ExecContext(ctx, `DELETE FROM calculations WHERE id=$1 AND user_id=$2`, id, uid)
 	if err != nil {
 		return err
@@ -774,7 +870,7 @@ func (s *Store) DeleteCalculation(ctx context.Context, uid, id int64) error {
 // ---------- ledger ----------
 
 // AddLedger appends an entry.
-func (s *Store) AddLedger(ctx context.Context, uid int64, e ledger.Entry) (ledger.Entry, error) {
+func (s *Store) AddLedger(ctx context.Context, uid string, e ledger.Entry) (ledger.Entry, error) {
 	if e.OccurredAt.IsZero() {
 		e.OccurredAt = time.Now()
 	}
@@ -787,14 +883,14 @@ func (s *Store) AddLedger(ctx context.Context, uid int64, e ledger.Entry) (ledge
 
 // ListLedger returns the user's entries in chronological order (not yet
 // annotated), optionally restricted to one account.
-func (s *Store) ListLedger(ctx context.Context, uid, accountID int64) ([]ledger.Entry, error) {
+func (s *Store) ListLedger(ctx context.Context, uid, accountID string) ([]ledger.Entry, error) {
 	q := `SELECT id,account_id,account_name,category,owner,kind,reason,balance,asset_value,note,occurred_at FROM ledger WHERE user_id=$1`
 	args := []any{uid}
-	if accountID != 0 {
+	if accountID != "" {
 		q += ` AND account_id=$2`
 		args = append(args, accountID)
 	}
-	q += ` ORDER BY occurred_at, id`
+	q += ` ORDER BY occurred_at, created_at, id`
 	rows, err := s.db.QueryContext(ctx, q, args...)
 	if err != nil {
 		return nil, err
@@ -813,11 +909,32 @@ func (s *Store) ListLedger(ctx context.Context, uid, accountID int64) ([]ledger.
 }
 
 // LatestLedgerTime returns when an account's most recent entry occurred.
-func (s *Store) LatestLedgerTime(ctx context.Context, uid, accountID int64) (time.Time, bool, error) {
+func (s *Store) LatestLedgerTime(ctx context.Context, uid, accountID string) (time.Time, bool, error) {
 	var at sql.NullTime
 	err := s.db.QueryRowContext(ctx, `SELECT MAX(occurred_at) FROM ledger WHERE user_id=$1 AND account_id=$2`, uid, accountID).Scan(&at)
 	if err != nil || !at.Valid {
 		return time.Time{}, false, err
 	}
 	return at.Time.UTC(), true, nil
+}
+
+// ValidID reports whether s is a canonical UUID. Check client-supplied ids with
+// it first: Postgres rejects malformed uuids with an error (a 500, and an
+// aborted transaction) rather than matching nothing.
+func ValidID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case i == 8 || i == 13 || i == 18 || i == 23:
+			if c != '-' {
+				return false
+			}
+		case c >= '0' && c <= '9', c >= 'a' && c <= 'f', c >= 'A' && c <= 'F':
+		default:
+			return false
+		}
+	}
+	return true
 }

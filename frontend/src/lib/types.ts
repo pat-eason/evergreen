@@ -2,7 +2,7 @@ export type Category = 'cash' | 'investment' | 'mortgage' | 'credit_card' | 'deb
 export type TaxTreatment = 'taxable' | 'tax_deferred' | 'tax_free'
 export type Strategy = 'smart' | 'taxable_first' | 'tax_deferred_first'
 
-export interface User { id: number; email: string }
+export interface User { id: string; email: string }
 
 export interface Profile {
   first_name: string
@@ -50,7 +50,7 @@ export interface AccountConfig {
 }
 
 export interface Member {
-  id: number
+  id: string
   first_name: string
   last_name: string
   relationship: 'spouse' | 'partner' | 'child' | 'parent' | 'other'
@@ -61,7 +61,7 @@ export interface Member {
 export type Owner = string
 
 export interface Account {
-  id: number
+  id: string
   owner: Owner
   name: string
   category: Category
@@ -69,7 +69,7 @@ export interface Account {
 }
 
 export interface PlanEvent {
-  id: number
+  id: string
   owner: Owner // start_age is this person's age
   kind: 'income' | 'spending'
   type: string
@@ -126,13 +126,13 @@ export interface PlanSummary {
 export interface PlanResult { summary: PlanSummary; years: YearRow[]; profile: Profile }
 
 export interface BudgetItem {
-  id?: number
+  id?: string
   section: 'income' | 'savings' | 'expense'
   name: string
   expr: string
   amount: number
   growth_rate: number
-  account_id: number | null
+  account_id: string | null
 }
 
 export interface BudgetSummary {
@@ -183,7 +183,7 @@ export interface FreedomResult {
 }
 
 export interface Calculation {
-  id: number
+  id: string
   kind: 'freedom' | 'plan'
   name: string
   inputs: unknown
@@ -194,8 +194,8 @@ export interface Calculation {
 export type LedgerKind = 'created' | 'updated' | 'edited' | 'deleted'
 
 export interface LedgerEntry {
-  id: number
-  account_id: number
+  id: string
+  account_id: string
   account_name: string
   category: Category
   owner: Owner
@@ -241,7 +241,7 @@ export interface History {
   interval: 'day' | 'week' | 'month'
   points: HistoryPoint[]
   summary: HistorySummary
-  accounts?: { id: number; name: string; category: Category; owner: Owner; alive: boolean }[]
+  accounts?: { id: string; name: string; category: Category; owner: Owner; alive: boolean }[]
   series?: Record<string, number[]>
 }
 

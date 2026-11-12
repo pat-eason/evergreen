@@ -10,7 +10,7 @@ import type { PlanEvent } from '@/lib/types'
 
 const props = defineProps<{ open: boolean; kind: 'income' | 'spending'; event: PlanEvent | null }>()
 const emit = defineEmits<{ close: [] }>()
-const form = reactive<Omit<PlanEvent, 'id'> & { id?: number }>({ kind: 'income', type: 'other', owner: 'self', name: '', start_age: 65, years: 0, annual_amount: 0, inflation_adjusted: true, taxable: false })
+const form = reactive<Omit<PlanEvent, 'id'> & { id?: string }>({ kind: 'income', type: 'other', owner: 'self', name: '', start_age: 65, years: 0, annual_amount: 0, inflation_adjusted: true, taxable: false })
 const forLife = ref(true)
 const busy = ref(false)
 const error = ref('')

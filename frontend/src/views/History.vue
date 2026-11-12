@@ -18,7 +18,7 @@ const history = ref<History | null>(null)
 const loading = ref(true)
 const entries = ref<LedgerEntry[]>([])
 const total = ref(0)
-const accountFilter = ref(0)
+const accountFilter = ref('')
 const loadingMore = ref(false)
 const valueOpen = ref(false)
 
@@ -239,7 +239,7 @@ const noHistory = computed(() => !loading.value && !state.accounts.length && !to
     <section class="glass pad rise" style="margin-top: 18px; --i: 3">
       <div class="card-head">
         <div><h2><Icon name="history" :size="18" /> Ledger</h2><span class="sub">{{ total }} {{ total === 1 ? 'entry' : 'entries' }}<template v-if="periodLabel"> · {{ periodLabel }}</template>, newest first</span></div>
-        <select v-model.number="accountFilter" class="input sel" aria-label="Filter by account">
+        <select v-model="accountFilter" class="input sel" aria-label="Filter by account">
           <option :value="0">All accounts</option>
           <option v-for="a in state.accounts" :key="a.id" :value="a.id">{{ a.name }}</option>
         </select>

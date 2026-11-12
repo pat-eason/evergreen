@@ -11,7 +11,7 @@ import type { Account, ValueReason } from '@/lib/types'
 const props = defineProps<{ open: boolean; account: Account | null }>()
 const emit = defineEmits<{ close: []; saved: [] }>()
 
-const form = reactive({ accountId: 0, balance: 0, homeValue: 0, reason: 'value' as ValueReason, asOf: todayISO(), note: '' })
+const form = reactive({ accountId: '', balance: 0, homeValue: 0, reason: 'value' as ValueReason, asOf: todayISO(), note: '' })
 const busy = ref(false)
 const error = ref('')
 
@@ -39,7 +39,7 @@ watch(() => props.open, (o) => {
   if (!o) return
   error.value = ''
   const a = props.account ?? state.accounts[0] ?? null
-  form.accountId = a?.id ?? 0
+  form.accountId = a?.id ?? ''
   form.balance = a?.config.balance ?? 0
   form.homeValue = a?.config.home_value ?? 0
   form.asOf = todayISO()
@@ -95,7 +95,7 @@ async function save() {
       <p class="small muted">Log a new balance. Each entry is added to your history so growth and loss show up over time. Deposits and withdrawals are tracked separately from market changes.</p>
 
       <label class="field"><span>Account</span>
-        <select v-model.number="form.accountId" class="input" @change="pickAccount">
+        <select v-model="form.accountId" class="input" @change="pickAccount">
           <option v-for="a in state.accounts" :key="a.id" :value="a.id">{{ a.name }} · {{ ownerName(a.owner) }}</option>
         </select>
       </label>

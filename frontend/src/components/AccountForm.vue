@@ -61,7 +61,7 @@ const title = computed(() => (props.account ? 'Edit account' : 'Add account'))
 const estPayment = computed(() => amortPayment(form.config.balance, form.config.interest_rate ?? 0, form.config.remaining_years || 0))
 const payoff = computed(() =>
   form.category === 'mortgage' || form.category === 'debt' || form.category === 'credit_card'
-    ? durationLabel(payoffMonths({ id: 0, name: form.name, category: form.category, owner: form.owner, config: form.config }))
+    ? durationLabel(payoffMonths({ id: '', name: form.name, category: form.category, owner: form.owner, config: form.config }))
     : '',
 )
 const utilization = computed(() => (form.config.credit_limit ? form.config.balance / form.config.credit_limit : 0))

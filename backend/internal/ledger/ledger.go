@@ -35,8 +35,8 @@ const (
 
 // Entry is one ledger row.
 type Entry struct {
-	ID          int64     `json:"id"`
-	AccountID   int64     `json:"account_id"`
+	ID          string    `json:"id"`
+	AccountID   string    `json:"account_id"`
 	AccountName string    `json:"account_name"`
 	Category    string    `json:"category"`
 	Owner       string    `json:"owner"`
@@ -76,7 +76,7 @@ func sorted(es []Entry) []Entry {
 // order. The result is chronological.
 func Annotate(es []Entry) []Entry {
 	out := sorted(es)
-	last := map[int64]float64{}
+	last := map[string]float64{}
 	for i := range out {
 		prev, seen := last[out[i].AccountID]
 		out[i].First = !seen
@@ -124,7 +124,7 @@ type Point struct {
 
 // AccountInfo labels one per-account series.
 type AccountInfo struct {
-	ID       int64  `json:"id"`
+	ID       string `json:"id"`
 	Name     string `json:"name"`
 	Category string `json:"category"`
 	Owner    string `json:"owner"`
@@ -146,11 +146,11 @@ type Summary struct {
 
 // History is the reconstructed timeline.
 type History struct {
-	Interval string              `json:"interval"`
-	Points   []Point             `json:"points"`
-	Summary  Summary             `json:"summary"`
-	Accounts []AccountInfo       `json:"accounts,omitempty"`
-	Series   map[int64][]float64 `json:"series,omitempty"` // account id -> balance per point
+	Interval string               `json:"interval"`
+	Points   []Point              `json:"points"`
+	Summary  Summary              `json:"summary"`
+	Accounts []AccountInfo        `json:"accounts,omitempty"`
+	Series   map[string][]float64 `json:"series,omitempty"` // account id -> balance per point
 }
 
 // Options control Build.
@@ -159,7 +159,7 @@ type Options struct {
 	From      time.Time // zero = first entry
 	To        time.Time // zero = today (or the latest entry, if later)
 	Interval  string    // auto | day | week | month
-	AccountID int64     // 0 = whole household
+	AccountID string    // "" = whole household
 	ByAccount bool
 }
 
@@ -187,7 +187,7 @@ func Build(entries []Entry, opt Options) History {
 		opt.Now = time.Now()
 	}
 	es := Annotate(entries)
-	if opt.AccountID != 0 {
+	if opt.AccountID != "" {
 		keep := es[:0:0]
 		for _, e := range es {
 			if e.AccountID == opt.AccountID {
@@ -255,8 +255,8 @@ func Build(entries []Entry, opt Options) History {
 	dates = append(dates, end) // always finish on the latest day
 
 	// replay
-	state := map[int64]*acct{}
-	order := []int64{}
+	state := map[string]*acct{}
+	order := []string{}
 	var contributions float64
 	idx := 0
 	apply := func(upto time.Time) {
@@ -279,7 +279,7 @@ func Build(entries []Entry, opt Options) History {
 	}
 
 	if opt.ByAccount {
-		h.Series = map[int64][]float64{}
+		h.Series = map[string][]float64{}
 	}
 	for pi, d := range dates {
 		apply(endOfDay(d))

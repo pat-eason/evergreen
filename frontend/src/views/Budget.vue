@@ -10,7 +10,7 @@ import { errMsg, invalidatePlan, loadData, state, toast } from '@/lib/store'
 import type { BudgetItem, BudgetMonth } from '@/lib/types'
 
 type Section = 'income' | 'savings' | 'expense'
-interface Row { key: number; section: Section; name: string; text: string; growth: number; account_id: number | null }
+interface Row { key: number; section: Section; name: string; text: string; growth: number; account_id: string | null }
 
 const month = ref(currentMonth())
 const rows = ref<Row[]>([])

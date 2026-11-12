@@ -18,12 +18,12 @@ func near(a, b float64) bool { return math.Abs(a-b) < 0.005 }
 
 func sample() []Entry {
 	return []Entry{
-		{ID: 1, AccountID: 1, AccountName: "401k", Category: "investment", Kind: KindCreated, Reason: ReasonInitial, Balance: 10000, OccurredAt: day("2026-01-01")},
-		{ID: 2, AccountID: 2, AccountName: "Mortgage", Category: "mortgage", Kind: KindCreated, Reason: ReasonInitial, Balance: 200000, AssetValue: 300000, OccurredAt: day("2026-01-01")},
-		{ID: 3, AccountID: 1, AccountName: "401k", Category: "investment", Kind: KindUpdated, Reason: ReasonDeposit, Balance: 12000, OccurredAt: day("2026-02-01")}, // +2000 contribution
-		{ID: 4, AccountID: 1, AccountName: "401k", Category: "investment", Kind: KindUpdated, Reason: ReasonValue, Balance: 13500, OccurredAt: day("2026-03-01")},   // +1500 growth
-		{ID: 5, AccountID: 1, AccountName: "401k", Category: "investment", Kind: KindUpdated, Reason: ReasonValue, Balance: 12900, OccurredAt: day("2026-04-01")},   // -600 loss
-		{ID: 6, AccountID: 2, AccountName: "Mortgage", Category: "mortgage", Kind: KindUpdated, Reason: ReasonPayment, Balance: 198000, AssetValue: 300000, OccurredAt: day("2026-04-01")},
+		{ID: "1", AccountID: "1", AccountName: "401k", Category: "investment", Kind: KindCreated, Reason: ReasonInitial, Balance: 10000, OccurredAt: day("2026-01-01")},
+		{ID: "2", AccountID: "2", AccountName: "Mortgage", Category: "mortgage", Kind: KindCreated, Reason: ReasonInitial, Balance: 200000, AssetValue: 300000, OccurredAt: day("2026-01-01")},
+		{ID: "3", AccountID: "1", AccountName: "401k", Category: "investment", Kind: KindUpdated, Reason: ReasonDeposit, Balance: 12000, OccurredAt: day("2026-02-01")}, // +2000 contribution
+		{ID: "4", AccountID: "1", AccountName: "401k", Category: "investment", Kind: KindUpdated, Reason: ReasonValue, Balance: 13500, OccurredAt: day("2026-03-01")},   // +1500 growth
+		{ID: "5", AccountID: "1", AccountName: "401k", Category: "investment", Kind: KindUpdated, Reason: ReasonValue, Balance: 12900, OccurredAt: day("2026-04-01")},   // -600 loss
+		{ID: "6", AccountID: "2", AccountName: "Mortgage", Category: "mortgage", Kind: KindUpdated, Reason: ReasonPayment, Balance: 198000, AssetValue: 300000, OccurredAt: day("2026-04-01")},
 	}
 }
 
@@ -31,7 +31,7 @@ func TestAnnotate(t *testing.T) {
 	es := Annotate(sample())
 	var m4 Entry
 	for _, e := range es {
-		if e.ID == 5 {
+		if e.ID == "5" {
 			m4 = e
 		}
 	}
@@ -43,7 +43,7 @@ func TestAnnotate(t *testing.T) {
 	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
 		rev[i], rev[j] = rev[j], rev[i]
 	}
-	if Annotate(rev)[5].ID != 6 && Annotate(rev)[4].ID != 6 {
+	if Annotate(rev)[5].ID != "6" && Annotate(rev)[4].ID != "6" {
 		t.Fatal("annotate should sort chronologically")
 	}
 }
@@ -72,7 +72,7 @@ func TestGrowthVersusContributions(t *testing.T) {
 }
 
 func TestDeletionIsAWithdrawalNotALoss(t *testing.T) {
-	es := append(sample(), Entry{ID: 7, AccountID: 1, AccountName: "401k", Category: "investment", Kind: KindDeleted, Reason: ReasonRemoved, Balance: 0, OccurredAt: day("2026-05-01")})
+	es := append(sample(), Entry{ID: "7", AccountID: "1", AccountName: "401k", Category: "investment", Kind: KindDeleted, Reason: ReasonRemoved, Balance: 0, OccurredAt: day("2026-05-01")})
 	h := Build(es, Options{Now: day("2026-05-02"), Interval: "month"})
 	last := h.Points[len(h.Points)-1]
 	if last.Investments != 0 {
@@ -86,7 +86,7 @@ func TestDeletionIsAWithdrawalNotALoss(t *testing.T) {
 }
 
 func TestBackfilledEntryChangesHistoryAtItsDate(t *testing.T) {
-	es := append(sample(), Entry{ID: 8, AccountID: 1, AccountName: "401k", Category: "investment", Kind: KindUpdated, Reason: ReasonValue, Balance: 11000, OccurredAt: day("2026-01-15")})
+	es := append(sample(), Entry{ID: "8", AccountID: "1", AccountName: "401k", Category: "investment", Kind: KindUpdated, Reason: ReasonValue, Balance: 11000, OccurredAt: day("2026-01-15")})
 	h := Build(es, Options{Now: day("2026-02-10"), Interval: "day"})
 	var jan20, jan10 Point
 	for _, p := range h.Points {
@@ -105,13 +105,13 @@ func TestBackfilledEntryChangesHistoryAtItsDate(t *testing.T) {
 func TestPerAccountSeriesAndFilter(t *testing.T) {
 	h := Build(sample(), Options{Now: day("2026-04-02"), Interval: "month", ByAccount: true})
 	n := len(h.Points)
-	if len(h.Series[1]) != n || len(h.Series[2]) != n || len(h.Accounts) != 2 {
-		t.Fatalf("series lengths: %d/%d points=%d accounts=%d", len(h.Series[1]), len(h.Series[2]), n, len(h.Accounts))
+	if len(h.Series["1"]) != n || len(h.Series["2"]) != n || len(h.Accounts) != 2 {
+		t.Fatalf("series lengths: %d/%d points=%d accounts=%d", len(h.Series["1"]), len(h.Series["2"]), n, len(h.Accounts))
 	}
-	if h.Series[1][n-1] != 12900 {
-		t.Fatalf("last 401k balance = %v", h.Series[1][n-1])
+	if h.Series["1"][n-1] != 12900 {
+		t.Fatalf("last 401k balance = %v", h.Series["1"][n-1])
 	}
-	only := Build(sample(), Options{Now: day("2026-04-02"), Interval: "month", AccountID: 2})
+	only := Build(sample(), Options{Now: day("2026-04-02"), Interval: "month", AccountID: "2"})
 	if only.Points[len(only.Points)-1].Investments != 0 {
 		t.Fatal("filter should exclude other accounts")
 	}
@@ -119,18 +119,18 @@ func TestPerAccountSeriesAndFilter(t *testing.T) {
 
 func TestLateStartingAccountPadsZeros(t *testing.T) {
 	es := []Entry{
-		{ID: 1, AccountID: 1, Category: "cash", Kind: KindCreated, Balance: 100, OccurredAt: day("2026-01-01")},
-		{ID: 2, AccountID: 2, Category: "cash", Kind: KindCreated, Balance: 50, OccurredAt: day("2026-03-01")},
+		{ID: "1", AccountID: "1", Category: "cash", Kind: KindCreated, Balance: 100, OccurredAt: day("2026-01-01")},
+		{ID: "2", AccountID: "2", Category: "cash", Kind: KindCreated, Balance: 50, OccurredAt: day("2026-03-01")},
 	}
 	h := Build(es, Options{Now: day("2026-04-01"), Interval: "month", ByAccount: true})
-	s := h.Series[2]
+	s := h.Series["2"]
 	if len(s) != len(h.Points) || s[0] != 0 || s[len(s)-1] != 50 {
 		t.Fatalf("series = %v", s)
 	}
 }
 
 func TestIntervalSelectionAndPointCap(t *testing.T) {
-	es := []Entry{{ID: 1, AccountID: 1, Category: "cash", Kind: KindCreated, Balance: 1, OccurredAt: day("2020-01-01")}}
+	es := []Entry{{ID: "1", AccountID: "1", Category: "cash", Kind: KindCreated, Balance: 1, OccurredAt: day("2020-01-01")}}
 	h := Build(es, Options{Now: day("2026-01-01"), Interval: "day"})
 	if len(h.Points) > maxPoints {
 		t.Fatalf("points = %d", len(h.Points))
@@ -163,12 +163,12 @@ func TestRangeStartAndSummaryOverRange(t *testing.T) {
 // snapshot and must not be counted as a second funding.
 func TestBackfillBeforeCreationDoesNotDoubleCountFunding(t *testing.T) {
 	es := []Entry{
-		{ID: 1, AccountID: 1, AccountName: "IRA", Category: "investment", Kind: KindCreated, Reason: ReasonInitial, Balance: 12000, OccurredAt: day("2026-06-01")},
-		{ID: 2, AccountID: 1, AccountName: "IRA", Category: "investment", Kind: KindUpdated, Reason: ReasonValue, Balance: 10000, OccurredAt: day("2026-01-01")}, // backfilled opening
-		{ID: 3, AccountID: 1, AccountName: "IRA", Category: "investment", Kind: KindUpdated, Reason: ReasonDeposit, Balance: 11000, OccurredAt: day("2026-03-01")},
+		{ID: "1", AccountID: "1", AccountName: "IRA", Category: "investment", Kind: KindCreated, Reason: ReasonInitial, Balance: 12000, OccurredAt: day("2026-06-01")},
+		{ID: "2", AccountID: "1", AccountName: "IRA", Category: "investment", Kind: KindUpdated, Reason: ReasonValue, Balance: 10000, OccurredAt: day("2026-01-01")}, // backfilled opening
+		{ID: "3", AccountID: "1", AccountName: "IRA", Category: "investment", Kind: KindUpdated, Reason: ReasonDeposit, Balance: 11000, OccurredAt: day("2026-03-01")},
 	}
 	ann := Annotate(es)
-	if !ann[0].First || ann[0].ID != 2 || ann[1].First || ann[2].First {
+	if !ann[0].First || ann[0].ID != "2" || ann[1].First || ann[2].First {
 		t.Fatalf("first flags: %+v", ann)
 	}
 	h := Build(es, Options{Now: day("2026-06-02"), Interval: "month"})

@@ -32,7 +32,7 @@ onMounted(async () => {
 
 // balance trend per account over the last 6 months, from the ledger
 const trend = computed(() => {
-  const out = new Map<number, { values: number[]; change: number; since: string }>()
+  const out = new Map<string, { values: number[]; change: number; since: string }>()
   const h = hist.value
   if (!h?.series || h.points.length < 2) return out
   for (const a of state.accounts) {

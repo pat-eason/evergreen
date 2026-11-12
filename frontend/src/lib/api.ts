@@ -40,17 +40,17 @@ export const api = {
   changeEmail: (email: string, password: string) => req<User>('PUT', '/me/email', { email, password }),
   changePassword: (current_password: string, new_password: string) => req<{ ok: boolean }>('PUT', '/me/password', { current_password, new_password }),
 
-  recordValue: (id: number, v: { balance: number; home_value?: number; reason: ValueReason; as_of?: string; note?: string }) =>
+  recordValue: (id: string, v: { balance: number; home_value?: number; reason: ValueReason; as_of?: string; note?: string }) =>
     req<{ account: Account; applied: boolean }>('POST', `/accounts/${id}/value`, v),
-  ledger: (q: { account_id?: number; limit?: number; offset?: number; from?: string; to?: string } = {}) =>
+  ledger: (q: { account_id?: string; limit?: number; offset?: number; from?: string; to?: string } = {}) =>
     req<{ entries: LedgerEntry[]; total: number }>('GET', '/ledger' + qs(q)),
-  history: (q: { months?: number; interval?: string; account_id?: number; by_account?: boolean; from?: string; to?: string } = {}) =>
+  history: (q: { months?: number; interval?: string; account_id?: string; by_account?: boolean; from?: string; to?: string } = {}) =>
     req<History>('GET', '/ledger/history' + qs({ ...q, by_account: q.by_account ? 1 : undefined })),
 
   members: () => req<Member[]>('GET', '/members'),
   createMember: (m: Omit<Member, 'id'>) => req<Member>('POST', '/members', m),
   updateMember: (m: Member) => req<Member>('PUT', `/members/${m.id}`, m),
-  deleteMember: (id: number) => req<void>('DELETE', `/members/${id}`),
+  deleteMember: (id: string) => req<void>('DELETE', `/members/${id}`),
 
   getProfile: () => req<{ profile: Profile; configured: boolean }>('GET', '/profile'),
   saveProfile: (p: Profile) => req<{ profile: Profile; configured: boolean }>('PUT', '/profile', p),
@@ -58,12 +58,12 @@ export const api = {
   accounts: () => req<Account[]>('GET', '/accounts'),
   createAccount: (a: Omit<Account, 'id'>) => req<Account>('POST', '/accounts', a),
   updateAccount: (a: Account) => req<Account>('PUT', `/accounts/${a.id}`, a),
-  deleteAccount: (id: number) => req<void>('DELETE', `/accounts/${id}`),
+  deleteAccount: (id: string) => req<void>('DELETE', `/accounts/${id}`),
 
   events: () => req<PlanEvent[]>('GET', '/events'),
   createEvent: (e: Omit<PlanEvent, 'id'>) => req<PlanEvent>('POST', '/events', e),
   updateEvent: (e: PlanEvent) => req<PlanEvent>('PUT', `/events/${e.id}`, e),
-  deleteEvent: (id: number) => req<void>('DELETE', `/events/${id}`),
+  deleteEvent: (id: string) => req<void>('DELETE', `/events/${id}`),
 
   budgetMonths: () => req<BudgetMonth[]>('GET', '/budgets'),
   budget: (month: string) => req<Budget>('GET', `/budgets/${month}`),
@@ -77,5 +77,5 @@ export const api = {
 
   calculations: (kind?: string) => req<Calculation[]>('GET', '/calculations' + (kind ? `?kind=${kind}` : '')),
   saveCalculation: (c: { kind: string; name: string; inputs: unknown; result: unknown }) => req<Calculation>('POST', '/calculations', c),
-  deleteCalculation: (id: number) => req<void>('DELETE', `/calculations/${id}`),
+  deleteCalculation: (id: string) => req<void>('DELETE', `/calculations/${id}`),
 }

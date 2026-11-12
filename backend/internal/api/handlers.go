@@ -6,7 +6,6 @@ import (
 	"math"
 	"net/http"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
@@ -24,16 +23,16 @@ func finite(vs ...float64) bool {
 	return true
 }
 
-func pathID(r *http.Request) (int64, bool) {
-	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
-	return id, err == nil && id > 0
+func pathID(r *http.Request) (string, bool) {
+	id := r.PathValue("id")
+	return id, store.ValidID(id)
 }
 
 // ---------- profile ----------
 
 // loadProfile returns the stored profile with current_age derived from the
 // stored birth year, so age advances on its own.
-func (s *Server) loadProfile(r *http.Request, uid int64) (sim.Profile, bool, error) {
+func (s *Server) loadProfile(r *http.Request, uid string) (sim.Profile, bool, error) {
 	p, exists, err := s.st.GetProfile(r.Context(), uid)
 	if err != nil {
 		return p, false, err
@@ -91,7 +90,7 @@ func (s *Server) putProfile(w http.ResponseWriter, r *http.Request) {
 var validRelationships = map[string]bool{"spouse": true, "partner": true, "child": true, "parent": true, "other": true}
 
 type memberDTO struct {
-	ID           int64  `json:"id"`
+	ID           string `json:"id"`
 	FirstName    string `json:"first_name"`
 	LastName     string `json:"last_name"`
 	Relationship string `json:"relationship"`
@@ -198,7 +197,7 @@ func (s *Server) deleteMember(w http.ResponseWriter, r *http.Request) {
 
 // resolveOwner validates an owner value: "self", "joint" (accounts only) or the
 // id of one of the user's household members. Empty means "self".
-func (s *Server) resolveOwner(r *http.Request, uid int64, owner string, allowJoint bool) (string, string) {
+func (s *Server) resolveOwner(r *http.Request, uid string, owner string, allowJoint bool) (string, string) {
 	switch owner {
 	case "", "self":
 		return "self", ""
@@ -208,8 +207,7 @@ func (s *Server) resolveOwner(r *http.Request, uid int64, owner string, allowJoi
 		}
 		return "", "events belong to a person, not the household"
 	}
-	id, err := strconv.ParseInt(owner, 10, 64)
-	if err != nil {
+	if !store.ValidID(owner) {
 		return "", "invalid owner"
 	}
 	ms, err := s.st.ListMembers(r.Context(), uid)
@@ -217,7 +215,7 @@ func (s *Server) resolveOwner(r *http.Request, uid int64, owner string, allowJoi
 		return "", "could not verify owner"
 	}
 	for _, m := range ms {
-		if m.ID == id {
+		if m.ID == owner {
 			return owner, ""
 		}
 	}
@@ -654,7 +652,7 @@ func (s *Server) copyBudget(w http.ResponseWriter, r *http.Request) {
 	}
 	src.Month = month
 	for i := range src.Items {
-		src.Items[i].ID = 0
+		src.Items[i].ID = ""
 	}
 	if err := s.st.SaveBudget(r.Context(), u.ID, src); err != nil {
 		serverErr(w, err)
@@ -680,7 +678,7 @@ func (s *Server) applyBudget(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sum := summarize(b.Items)
-	perAccount := map[int64]float64{}
+	perAccount := map[string]float64{}
 	for _, it := range b.Items {
 		if it.Section == "savings" && it.AccountID != nil {
 			perAccount[*it.AccountID] += it.Amount
@@ -738,7 +736,7 @@ func (s *Server) loadInputs(r *http.Request) (sim.Inputs, error) {
 	year := time.Now().Year()
 	offset := map[string]int{}
 	for _, m := range ms {
-		offset[strconv.FormatInt(m.ID, 10)] = p.CurrentAge - (year - m.BirthYear)
+		offset[m.ID] = p.CurrentAge - (year - m.BirthYear)
 	}
 	for i := range es {
 		if d, ok := offset[es[i].Owner]; ok {
