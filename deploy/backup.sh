@@ -24,7 +24,8 @@ out="$dir/evergreen-$(date -u +%Y%m%d-%H%M%S).dump"
 trap 'rm -f "$out.partial"' EXIT
 
 # pg_dump runs inside the db container, using its own credentials.
-docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' > "$out.partial"
+# </dev/null: never read the caller's stdin (the deploy pipes its script in through `bash -s`)
+docker compose exec -T db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" --format=custom' < /dev/null > "$out.partial"
 [ -s "$out.partial" ] || { echo "backup is empty; keeping nothing" >&2; exit 1; }
 mv "$out.partial" "$out"
 chmod 600 "$out"
